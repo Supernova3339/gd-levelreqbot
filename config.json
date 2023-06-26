@@ -1,0 +1,18 @@
+{
+  "botUsername": "changeme",
+  "botToken": "changeme",
+  "channel": "changeme",
+  "streamerUsername": "changeme",
+  "viewerRequestLimit": 1,
+  "subscriberRequestLimit": 5,
+  "blacklistedLevels": [],
+  "commandNames": {
+    "levelRequest": "!r",
+    "removeLevel": "!remove",
+    "banViewer": "!ban",
+    "unbanViewer": "!unban",
+    "currentLevel": "!current",
+    "nextLevel": "!next",
+    "queueCommand": "!queue"
+  }
+}
