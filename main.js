@@ -9,8 +9,7 @@ const {
   channel,
   streamerUsername,
   viewerRequestLimit,
-  subscriberRequestLimit, // Add separate request limit for subscribers
-  blacklistedLevels,
+  subscriberRequestLimit,
   commandNames
 } = config;
 
@@ -26,9 +25,19 @@ const {
   queueCommand
 } = commandNames;
 
-// Initialize the viewer and subscriber queues as empty arrays
-const viewerQueue = [];
-const subscriberQueue = [];
+let viewerQueue = [];
+let subscriberQueue = [];
+
+// Load subscriber and viewer queues from files if they exist
+if (fs.existsSync('subscribers.json')) {
+  const subscriberQueueFile = fs.readFileSync('subscribers.json');
+  subscriberQueue = JSON.parse(subscriberQueueFile);
+}
+
+if (fs.existsSync('viewers.json')) {
+  const viewerQueueFile = fs.readFileSync('viewers.json');
+  viewerQueue = JSON.parse(viewerQueueFile);
+}
 
 // Initialize the request counters for each viewer
 const viewerRequestCounts = {};
@@ -54,6 +63,19 @@ client.on('connected', () => {
   console.log(`Connected to ${config.channel}'s chat!`);
 });
 
+// Save subscriber queue to file
+function saveSubscriberQueue() {
+  const subscriberQueueFile = JSON.stringify(subscriberQueue);
+  fs.writeFileSync('subscribers.json', subscriberQueueFile);
+}
+
+// Save viewer queue to file
+function saveViewerQueue() {
+  const viewerQueueFile = JSON.stringify(viewerQueue);
+  fs.writeFileSync('viewers.json', viewerQueueFile);
+}
+
+
 // Extract the level ID from the command message
 function extractLevelId(message) {
   const command = message.trim().split(' ')[0];
@@ -77,7 +99,7 @@ function hasReachedRequestLimit(username, isSubscriber) {
   const viewerLevels = queue.filter((level) => level.username === username);
 
   return viewerLevels.length >= requestLimit;
-}  
+}
 
 // Viewer adds a level to the queue
 function addLevelToQueue(levelId, isSubscriber, username) {
@@ -87,14 +109,16 @@ function addLevelToQueue(levelId, isSubscriber, username) {
   // Check the current number of levels in the queue for the viewer
   const viewerLevels = queue.filter((level) => level.username === username);
 
-  if (viewerLevels.length >= viewerLevels.length + 1) {
+  if (viewerLevels.length >= requestLimit) {
     client.say(config.channel, `Sorry, you have reached your request limit of ${requestLimit} level(s).`);
     return;
   }
 
   queue.push({ levelId, isSubscriber, username });
+  saveSubscriberQueue(); // Save the subscriber queue
+  saveViewerQueue(); // Save the viewer queue
   client.say(config.channel, `Level ${levelId} added to the queue for ${username}.`);
-}  
+}
 
 // Remove a level from the queue
 function removeLevelFromQueue(levelId, username) {
@@ -103,16 +127,18 @@ function removeLevelFromQueue(levelId, username) {
 
   if (viewerIndex !== -1) {
     viewerQueue.splice(viewerIndex, 1);
+    saveViewerQueue(); // Save the viewer queue
     return true;
   }
 
   if (subscriberIndex !== -1) {
     subscriberQueue.splice(subscriberIndex, 1);
+    saveSubscriberQueue(); // Save the subscriber queue
     return true;
   }
 
   return false;
-}  
+}
 
 // Streamer or moderator gets a random level from the queue
 function getRandomLevelFromQueue() {
@@ -135,7 +161,9 @@ function getRandomLevelFromQueue() {
     const randomIndex = Math.floor(Math.random() * selectedQueue.length);
     const randomLevel = selectedQueue[randomIndex];
     selectedQueue.splice(randomIndex, 1); // Remove the level from the queue
-    return `${queueType ? queueType + ' ' : ''}level ${randomLevel}`;
+    saveSubscriberQueue(); // Save the subscriber queue
+    saveViewerQueue(); // Save the viewer queue
+    return `${queueType ? queueType + ' ' : ''}level ${randomLevel.levelId}`;
   }
 
   return 'Both the subscriber and viewer queues are currently empty.';
@@ -158,115 +186,141 @@ function goToNextLevel() {
     queueType = 'Viewer';
   }
 
-  if (selectedQueue) {
+  if (selectedQueue && selectedQueue.length > 0) {
     const nextLevelObj = selectedQueue.shift(); // Get and remove the next level object from the queue
     const nextLevel = nextLevelObj.levelId; // Extract the level ID from the level object
     const username = nextLevelObj.username; // Extract the requester username from the level object
+    saveSubscriberQueue(); // Save the subscriber queue
+    saveViewerQueue(); // Save the viewer queue
     return `Next ${queueType} Level: ${nextLevel}  (Submitted by: ${username})`;
-  }
+  } else {
+    const isSubscriberQueueEmpty = subscriberQueue.length === 0;
+    const isViewerQueueEmpty = viewerQueue.length === 0;
 
-  return 'Both the subscriber and viewer queues are currently empty.';
+    if (isSubscriberQueueEmpty && isViewerQueueEmpty) {
+      return 'Both the subscriber and viewer queues are currently empty.';
+    }
+  }
 }
 
 // Get the current viewer level
 function getCurrentViewerLevel() {
-    if (viewerQueue.length === 0) {
-      return 'No level in the viewer queue.';
-    }
-  
-    const { levelId, username } = viewerQueue[0];
-    return `Viewer Level ${levelId} (Submitted by: ${username})`;
+  if (viewerQueue.length === 0) {
+    return 'No level in the viewer queue.';
   }
-  
-  // Get the current subscriber level
-  function getCurrentSubscriberLevel() {
-    if (subscriberQueue.length === 0) {
-      return 'No level in the subscriber queue.';
-    }
-  
-    const { levelId, username } = subscriberQueue[0];
-    return `Subscriber Level ${levelId} ( Submitted By: ${username})`;
+
+  const { levelId, username } = viewerQueue[0];
+  return `Viewer Level ${levelId} (Submitted by: ${username})`;
+}
+
+// Get the current subscriber level
+function getCurrentSubscriberLevel() {
+  if (subscriberQueue.length === 0) {
+    return 'No level in the subscriber queue.';
   }
+
+  const { levelId, username } = subscriberQueue[0];
+  return `Subscriber Level ${levelId} (Submitted by: ${username})`;
+}
 
 // Twitch chat command handlers
 client.on('message', (channel, tags, message) => {
   const { username } = tags;
 
-  if (message.startsWith(levelRequest)) {
+  if (message.startsWith(commandNames.levelRequest)) {
     const levelId = extractLevelId(message);
     if (levelId) {
       const isSubscriber = tags.subscriber || tags.mod || username === streamerUsername;
       if (hasReachedRequestLimit(username, isSubscriber)) {
-        client.say(config.channel, `Sorry, you have reached your request limit of ${isSubscriber ? subscriberRequestLimit : viewerRequestLimit} level(s).`);
+        client.say(channel, `Sorry, you have reached your request limit of ${isSubscriber ? subscriberRequestLimit : viewerRequestLimit} level(s).`);
       } else {
         addLevelToQueue(levelId, isSubscriber, username);
       }
     } else {
-      client.say(config.channel, 'Invalid level ID. Please provide a level ID between 3 and 9 characters.');
+      client.say(channel, 'Invalid level ID. Please provide a level ID between 3 and 9 characters.');
     }
-  } else if (message.startsWith(removeLevel)) {
+  } else if (message.startsWith(commandNames.removeLevel)) {
     const levelId = extractLevelId(message);
     if (levelId) {
-      const removed = removeLevelFromQueue(levelId);
+      const removed = removeLevelFromQueue(levelId, username);
       if (removed) {
-        client.say(config.channel, `Level ${levelId} removed from the queue.`);
+        client.say(channel, `Level ${levelId} removed from the queue.`);
       } else {
-        client.say(config.channel, `Level ${levelId} was not found in the queue.`);
+        client.say(channel, `Level ${levelId} was not found in the queue.`);
       }
     } else {
-      client.say(config.channel, 'Invalid level ID. Please provide a level ID between 3 and 9 characters.');
+      client.say(channel, 'Invalid level ID. Please provide a level ID between 3 and 9 characters.');
     }
-  } else if (message.startsWith(banViewer) && tags.mod && username === streamerUsername) {
+  } else if (message.startsWith(commandNames.banViewer) && tags.mod && username === streamerUsername) {
     // Ban viewer from requesting levels
     // todo
-  } else if (message.startsWith(unbanViewer) && tags.mod && username === streamerUsername) {
+  } else if (message.startsWith(commandNames.unbanViewer) && tags.mod && username === streamerUsername) {
     // Unban viewer from requesting levels
     // todo
-  } else if (message.startsWith(setRequestLimit) && tags.mod && username === streamerUsername) {
+  } else if (message.startsWith(commandNames.setRequestLimit) && tags.mod && username === streamerUsername) {
     // Set the request limit
     // todo
-  } else if (message.startsWith(randomLevel) && (tags.mod || username === streamerUsername)) {
+  } else if (message.startsWith(commandNames.randomLevel) && (tags.mod || username === streamerUsername)) {
     const level = getRandomLevelFromQueue();
-    client.say(config.channel, level);
-  } else if (message.startsWith(currentLevel) && (tags.mod || username === streamerUsername)) {
+    client.say(channel, level);
+  } else if (message.startsWith(commandNames.currentLevel) && (tags.mod || username === streamerUsername)) {
     const currentViewerLevel = getCurrentViewerLevel();
     const currentSubscriberLevel = getCurrentSubscriberLevel();
     const currentLevelsMessage = `Current Levels: ${currentViewerLevel} | ${currentSubscriberLevel}`;
-    client.say(config.channel, currentLevelsMessage);
-} else if (message.startsWith(nextLevel) && (tags.mod || username === streamerUsername)) {
+    client.say(channel, currentLevelsMessage);
+  } else if (message.startsWith(commandNames.nextLevel) && (tags.mod || username === streamerUsername)) {
     const next = goToNextLevel();
-    client.say(config.channel, next);
-} else if (message.startsWith(queueCommand)) {
+    client.say(channel, next);
+  } else if (message.startsWith(commandNames.queueCommand)) {
     // Display the current state of the queues
     const viewerQueueMessage = getViewerQueueMessage();
     const subscriberQueueMessage = getSubscriberQueueMessage();
     const queueMessage = `${viewerQueueMessage}\n${subscriberQueueMessage}`;
-    client.say(config.channel, queueMessage);
+    client.say(channel, queueMessage);
   }
-  
-  // Get the formatted viewer queue message
-  function getViewerQueueMessage() {
-    if (viewerQueue.length === 0) {
-      return 'Viewer Queue is empty.';
-    }
-  
-    const queueMessage = viewerQueue
-      .map((level, index) => `#${index + 1}: ${level.levelId} (${level.username})`)
-      .join(', ');
-  
-    return `Viewer Queue: ${queueMessage}`;
+});
+
+// Get the formatted viewer queue message
+function getViewerQueueMessage() {
+  if (viewerQueue.length === 0) {
+    return 'Viewer Queue is empty.';
   }
-  
-  // Get the formatted subscriber queue message
-  function getSubscriberQueueMessage() {
-    if (subscriberQueue.length === 0) {
-      return 'Subscriber Queue is empty.';
-    }
-  
-    const queueMessage = subscriberQueue
-      .map((level, index) => `#${index + 1}: ${level.levelId}`)
-      .join(', ');
-  
-    return `Subscriber Queue: ${queueMessage}`;
-  }  
+
+  const filteredQueue = viewerQueue.filter((level) => !level.removed); // Remove levels marked as removed
+
+  if (filteredQueue.length === 0) {
+    return 'Viewer Queue is empty.';
+  }
+
+  const queueMessage = filteredQueue
+    .map((level, index) => `#${index + 1}: Level ${level.levelId} (Submitted by: ${level.username})`)
+    .join(' | ');
+
+  return `Viewer Queue: ${queueMessage}`;
+}
+
+// Get the formatted subscriber queue message
+function getSubscriberQueueMessage() {
+  if (subscriberQueue.length === 0) {
+    return 'Subscriber Queue is empty.';
+  }
+
+  const filteredQueue = subscriberQueue.filter((level) => !level.removed); // Remove levels marked as removed
+
+  if (filteredQueue.length === 0) {
+    return 'Subscriber Queue is empty.';
+  }
+
+  const queueMessage = filteredQueue
+    .map((level, index) => `#${index + 1}: Level ${level.levelId} (Submitted by: ${level.username})`)
+    .join(' | ');
+
+  return `Subscriber Queue: ${queueMessage}`;
+}
+
+// Save the queues to files when the bot is shut down
+process.on('SIGINT', () => {
+  saveSubscriberQueue();
+  saveViewerQueue();
+  process.exit();
 });
