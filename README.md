@@ -2,7 +2,7 @@
 A Simple Level Request Bot For Twitch
 
 # Features
-- Subscriber and Viewer queues
+- Subscriber and Viewer queues ( persistent via JSON files )
 - Current Command ( view currently playing level )
 - Next Command ( go to next level in queue )
 - Few commands
