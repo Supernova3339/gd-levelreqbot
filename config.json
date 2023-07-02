@@ -8,11 +8,12 @@
   "blacklistedLevels": [],
   "commandNames": {
     "levelRequest": "!r",
-    "removeLevel": "!remove",
-    "banViewer": "!ban",
-    "unbanViewer": "!unban",
+    "removeLevelCommand": "!delete",
+    "blacklistCommand": "!blacklist",
+    "unblacklistCommand": "!unblacklist",
     "currentLevel": "!current",
-    "nextLevel": "!next",
-    "queueCommand": "!queue"
+    "nextLevelCommand": "!next",
+    "queueCommand": "!queue",
+    "clearQueueCommand": "!clear"
   }
 }
