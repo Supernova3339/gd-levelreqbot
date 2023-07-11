@@ -11,6 +11,9 @@ A Simple Level Request Bot For Twitch
 
 ## Usage Instructions
 
+Download all files
+[https://downgit.evecalm.com/#/home?url=https://github.com/supernova3339/gd-levelreqbot](https://downgit.evecalm.com/#/home?url=https://github.com/supernova3339/gd-levelreqbot)
+
 Install dependencies with NPM
 ``` 
 npm ci
