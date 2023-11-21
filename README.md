@@ -1,5 +1,5 @@
 # gd-levelreqbot
-A Simple Level Request Bot For Twitch
+A Simple Level Request Bot For Twitch - 0.1.0 soon! ( has quite a bit )
 
 # Features
 - Subscriber and Viewer queues ( persistent via JSON files )
