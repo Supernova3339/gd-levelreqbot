@@ -6,7 +6,7 @@ module.exports = {
     description: 'Remove an existing item',
     params: true,
     tags: ['mod', 'broadcaster'],
-    execute(client, channel, parameters) {
+    execute(client, channel, tags, username, message, parameters) {
         // Handle remove level command
         const result = removeLevel(parameters);
         client.say(channel, result);
