@@ -2,7 +2,7 @@
   "name": "gd-levelreqbot",
   "author": "Supernova3339",
   "main": "main.js",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "dependencies": {
     "axios": "^1.7.2",
     "figlet": "^1.7.0",
