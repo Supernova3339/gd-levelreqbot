@@ -1,0 +1,7 @@
+{
+  "botUsername": "botusername",
+  "botToken": "bot-token",
+  "channel": "channel-connected-to",
+  "streamerUsername": "streamer-connected-to"
+}
+

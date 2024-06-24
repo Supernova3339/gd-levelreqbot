@@ -1,13 +1,14 @@
 # gd-levelreqbot
-A Simple Level Request Bot For Twitch - 0.1.0 soon! ( has quite a bit )
+A Simple Level Request Bot For Twitch
 
 # Features
 - Subscriber and Viewer queues ( persistent via JSON files )
-- Current Command ( view currently playing level )
 - Next Command ( go to next level in queue )
 - Few commands
-- Gui ( browser or desktop app, not 100% sure and not finished )
-- Easy to manage, customizable, configuration file
+- Easy to manage, customizable, configuration files
+- Fully rewritten to be cleaner and more customizable
+- GD Mode ( coming soon! ) change your queue to be geometry dash powered
+- Intuitive updater
 
 ## Usage Instructions
 
