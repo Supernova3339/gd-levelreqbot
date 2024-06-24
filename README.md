@@ -12,7 +12,7 @@ A Simple Level Request Bot For Twitch
 
 ## Usage Instructions
 
-Download all files
+Download all files ( do this if updating as well! no data will be lost) \
 [https://downgit.evecalm.com/#/home?url=https://github.com/supernova3339/gd-levelreqbot](https://downgit.evecalm.com/#/home?url=https://github.com/supernova3339/gd-levelreqbot)
 
 Use NodeJS to run the bot
