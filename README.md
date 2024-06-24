@@ -33,3 +33,6 @@ node main.js
 ``` 
 pm2 start main.js
 ```
+
+Used by [Kingsman265](https://twitch.tv/kingsman265_twitch) \
+Want your name here? Make an issue and let us know!
