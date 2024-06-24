@@ -1,6 +1,7 @@
 const limits = require('../limits.json');
 const fs = require("node:fs");
 const botConfig = require('../auth-config.json');
+const modes = require ('../modes.json');
 
 let viewerQueue = [];
 let subscriberQueue = [];
@@ -72,6 +73,13 @@ function hasReachedRequestLimit(username, isSubscriber) {
  * @return {void} - This function does not return any value.
  */
 function addLevelToQueue(levelId, isSubscriber, username, client) {
+    if (isSubscriber && !modes.sub) {
+        viewerQueue.push({ levelId, isSubscriber: false, username });
+        saveViewerQueue(); // Save the viewer queue
+        client.say(botConfig.channel, `Level ${levelId} added to the queue for ${username}.`);
+        return;
+    }
+
     const queue = isSubscriber ? subscriberQueue : viewerQueue;
     const requestLimit = isSubscriber ? limits.subscriberRequestLimit : limits.viewerRequestLimit;
 
@@ -84,8 +92,13 @@ function addLevelToQueue(levelId, isSubscriber, username, client) {
     }
 
     queue.push({ levelId, isSubscriber, username });
-    saveSubscriberQueue(); // Save the subscriber queue
-    saveViewerQueue(); // Save the viewer queue
+
+    if(isSubscriber) {
+        saveSubscriberQueue(); // Save the subscriber queue
+    } else {
+        saveViewerQueue(); // Save the viewer queue
+    }
+
     client.say(botConfig.channel, `Level ${levelId} added to the queue for ${username}.`);
 }
 
@@ -138,6 +151,27 @@ function removeLevel(levelId) {
     return `Level ${levelId} was not found in the queue.`;
 }
 
+function searchQueue(levelId) {
+    if (!levelId) {
+        return 'No level ID was submitted for search.';
+    }
+
+    const levelIdNumber = parseInt(levelId, 10);
+
+    const levelInViewerQueue = viewerQueue.find((level) => level.levelId === levelIdNumber);
+    const levelInSubscriberQueue = subscriberQueue.find((level) => level.levelId === levelIdNumber);
+
+    if (levelInViewerQueue) {
+        return levelInViewerQueue;
+    }
+
+    if (levelInSubscriberQueue) {
+        return levelInSubscriberQueue;
+    }
+
+    return 'Level was not found in either queue.';
+}
+
 // Streamer or moderator gets a random level from the queue
 /**
  * Returns a random level from the queue based on probability.
@@ -183,6 +217,12 @@ function goToNextLevel() {
     let selectedQueue;
     let queueType;
 
+    // If the subscriber queue is disabled, add all levels to viewer queue
+    if (!modes.sub && subscriberQueue.length > 0) {
+        viewerQueue.push(...subscriberQueue);
+        subscriberQueue = [];
+    }
+
     // Generate a random number between 0 and 99
     const randomChance = Math.floor(Math.random() * 100);
 
@@ -196,13 +236,13 @@ function goToNextLevel() {
     }
 
     if (selectedQueue && selectedQueue.length > 0) {
-        const nextLevelObj = selectedQueue.shift(); // Get and remove the next level object from the queue
-        const nextLevel = nextLevelObj.levelId; // Extract the level ID from the level object
-        const username = nextLevelObj.username; // Extract the requester username from the level object
-        saveSubscriberQueue(); // Save the subscriber queue
-        saveViewerQueue(); // Save the viewer queue
+        const nextLevelObj = selectedQueue.shift();
+        const nextLevel = nextLevelObj.levelId;
+        const username = nextLevelObj.username;
+        saveSubscriberQueue();
+        saveViewerQueue();
 
-        return `Next ${queueType} Level: ${nextLevel}  (Submitted by: ${username})`;
+        return `Next ${queueType} Level: ${nextLevel}  (Submitted by: ${username}). Run !info ${nextLevel} for more information!`;
     } else {
         const isSubscriberQueueEmpty = subscriberQueue.length === 0;
         const isViewerQueueEmpty = viewerQueue.length === 0;
@@ -282,11 +322,15 @@ function getViewerQueueMessage() {
  *
  */
 function getSubscriberQueueMessage() {
+    if (!modes.sub) {
+        return 'Subscriber Queue is currently disabled.';
+    }
+
     if (subscriberQueue.length === 0) {
         return 'Subscriber Queue is empty.';
     }
 
-    const filteredQueue = subscriberQueue.filter((level) => !level.removed); // Remove levels marked as removed
+    const filteredQueue = subscriberQueue.filter((level) => !level.removed);
 
     if (filteredQueue.length === 0) {
         return 'Subscriber Queue is empty.';
@@ -299,4 +343,4 @@ function getSubscriberQueueMessage() {
     return `Subscriber Queue: ${queueMessage}`;
 }
 
-module.exports  = { hasReachedRequestLimit, addLevelToQueue, getViewerQueueMessage, getSubscriberQueueMessage, removeLevel, clearQueue, goToNextLevel, saveSubscriberQueue, saveViewerQueue};
+module.exports  = { hasReachedRequestLimit, addLevelToQueue, getViewerQueueMessage, getSubscriberQueueMessage, removeLevel, clearQueue, goToNextLevel, saveSubscriberQueue, saveViewerQueue, searchQueue};

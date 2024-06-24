@@ -7,7 +7,8 @@ A Simple Level Request Bot For Twitch
 - Few commands
 - Easy to manage, customizable, configuration files
 - Fully rewritten to be cleaner and more customizable
-- GD Mode ( coming soon! ) change your queue to be geometry dash powered
+- GD Mode | change your queue to be geometry dash powered
+- Sub Mode | enable or disable subscriber queue
 - Intuitive updater
 
 ## Usage Instructions
