@@ -1,4 +1,3 @@
-// File path: /updateModule.js
 const pkg = require('../package.json');
 const botConfig = require('../auth-config.json');
 const axios = require('axios');

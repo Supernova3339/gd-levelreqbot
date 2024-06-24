@@ -1,4 +1,3 @@
-// File path: /auth.js
 const tmi = require('tmi.js');
 const botConfig = require('../auth-config.json');
 const pkg = require('../package.json');

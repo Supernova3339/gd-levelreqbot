@@ -40,24 +40,6 @@ function saveViewerQueue() {
     fs.writeFileSync('viewers.json', viewerQueueFile);
 }
 
-// Extract the level ID from the command message
-/**
- * Extracts the level ID from a given message.
- *
- * @param {string} message - The message containing the level ID.
- * @return {number|null} - The extracted level ID, or null if it doesn't meet the criteria.
- */
-function extractLevelId(message) {
-    const levelId = message.trim().split(' ')[1];
-    const isNumeric = /^\d+$/.test(levelId); // Check if levelId is numeric
-
-    if (levelId && levelId.length >= 3 && levelId.length <= 9 && isNumeric) {
-        return parseInt(levelId, 10);
-    }
-
-    return null;
-}
-
 
 // Check if a viewer has reached the request limit
 /**
@@ -85,6 +67,7 @@ function hasReachedRequestLimit(username, isSubscriber) {
  * @param {number} levelId - The ID of the level to be added to the queue.
  * @param {boolean} isSubscriber - Indicates whether the user is a subscriber or not.
  * @param {string} username - The username of the user.
+ * @param {function} client - Hook for TMI.js
  *
  * @return {void} - This function does not return any value.
  */

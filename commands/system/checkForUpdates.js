@@ -1,4 +1,3 @@
-const { goToNextLevel } = require("../../utils/queue");
 const checkForUpdates = require("../../modules/updateModule");
 
 module.exports = {
@@ -7,7 +6,7 @@ module.exports = {
     description: 'Check if the bot has an update',
     params: false,
     tags: ['mod', 'broadcaster'],
-    execute(client, channel, parameters) {
+    execute(client) {
         checkForUpdates(client);
     }
 };

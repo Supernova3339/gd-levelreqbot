@@ -3,7 +3,7 @@ const { removeLevel } = require("../../utils/queue");
 module.exports = {
     name: '!remove',
     category: 'queue',
-    description: 'Remove a the existing item',
+    description: 'Remove an existing item',
     params: true,
     tags: ['mod', 'broadcaster'],
     execute(client, channel, parameters) {
