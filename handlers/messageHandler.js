@@ -1,3 +1,5 @@
+const logConsole = require("../logger");
+
 function handleMessage(client) {
     return (channel, tags, message, self) => {
         // Ignore echoed messages.
@@ -8,25 +10,28 @@ function handleMessage(client) {
         const commandName = splitMessage[0].trim();
         const parameters = message.substr(commandName.length).trim();
 
+        // console.log('User tags:', tags);
+
         // If this command exists:
         if (client.commands.has(commandName)) {
             const command = client.commands.get(commandName);
 
-            // Permission validation: only for commands with specified tags.
             if(command.tags && command.tags.length > 0) {
-                // Ensure that tags exist before calling some() on it
-                const hasPermission = command.tags.some(tag => tags[tag]);
+
+                const hasPermission = command.tags.some(tag => tags.badges && tag in tags.badges);
+
                 if (!hasPermission) {
-                    return; // Do nothing if user does not have the necessary permission
+                    return;
                 }
             }
 
-            // Check if command requires parameters
             if (command.params && parameters.length > 0) {
-                command.execute(client, channel, tags, tags.username, message, parameters);
+                command.execute(client, channel, tags, message, parameters);
             } else if (!command.params) {
-                command.execute(client, channel, tags, tags.username, message);
+                command.execute(client, channel, tags, message);
             }
+        } else {
+            logConsole(`Command not found: ${commandName}`);
         }
     };
 }

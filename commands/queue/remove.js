@@ -5,7 +5,7 @@ module.exports = {
     category: 'queue',
     description: 'Remove an existing item',
     params: true,
-    tags: ['mod', 'broadcaster'],
+    tags: ['moderator', 'broadcaster'],
     execute(client, channel, tags, username, message, parameters) {
         // Handle remove level command
         const result = removeLevel(parameters);

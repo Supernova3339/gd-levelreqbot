@@ -5,7 +5,7 @@ module.exports = {
     category: 'queue',
     description: 'Clear all the existing items',
     params: false,
-    tags: ['mod', 'broadcaster'],
+    tags: ['moderator', 'broadcaster'],
     execute(client, channel, parameters) {
         const result = clearQueue();
         client.say(channel, result);

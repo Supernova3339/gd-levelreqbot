@@ -5,7 +5,7 @@ module.exports = {
     category: 'queue',
     description: 'Go to the next item in queue',
     params: false,
-    tags: ['mod', 'broadcaster'],
+    tags: ['moderator', 'broadcaster'],
     execute(client, channel, tags, username, message, parameters) {
         const next = goToNextLevel();
         client.say(channel, next);

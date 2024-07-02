@@ -20,7 +20,11 @@ function loadCommands(client) {
             }
             else {
                 const command = require(fullPath);
-                client.commands.set(command.name, {execute: command.execute, params: command.params || false});
+                client.commands.set(command.name, {
+                    execute: command.execute,
+                    params: command.params,
+                    tags: command.tags || false
+                });
 
                 // if (command.params) {
                 //     console.log(`Command '${command.name}' allows params.`);
