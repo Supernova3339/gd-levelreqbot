@@ -12,8 +12,9 @@ function handleMessage(client) {
         if (client.commands.has(commandName)) {
             const command = client.commands.get(commandName);
 
-            // Permission validation: only for commands with specified tags
+            // Permission validation: only for commands with specified tags.
             if(command.tags && command.tags.length > 0) {
+                // Ensure that tags exist before calling some() on it
                 const hasPermission = command.tags.some(tag => tags[tag]);
                 if (!hasPermission) {
                     return; // Do nothing if user does not have the necessary permission
