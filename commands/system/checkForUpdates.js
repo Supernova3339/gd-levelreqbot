@@ -5,7 +5,7 @@ module.exports = {
     category: 'system',
     description: 'Check if the bot has an update',
     params: false,
-    tags: ['mod', 'broadcaster'],
+    tags: ['moderator', 'broadcaster'],
     execute(client) {
         checkForUpdates(client);
     }
