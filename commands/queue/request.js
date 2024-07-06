@@ -5,10 +5,9 @@ module.exports = {
     name: '!r',
     category: 'queue',
     description: 'Add an item to queue',
-    tags: ['username'],
     params: true,
-    execute(client, channel, tags, username, message, parameters) {
-        const levelId = extractLevelId(parameters);
+    execute(client, channel, tags, username, message) {
+        const levelId = extractLevelId(message);
         if (levelId) {
             const isSubscriber = tags.subscriber || tags.mod || tags.broadcaster;
             if (hasReachedRequestLimit(username, isSubscriber)) {

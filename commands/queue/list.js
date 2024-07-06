@@ -5,7 +5,7 @@ module.exports = {
     name: '!list',
     category: 'queue',
     description: 'List all the existing items',
-    tags: ['username'],
+    tags: [],
     execute(client, channel) {
         // Display the current state of the viewer queue
         let queueMessage = getViewerQueueMessage();

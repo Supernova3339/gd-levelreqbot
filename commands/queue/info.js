@@ -6,9 +6,10 @@ module.exports = {
     name: '!info',
     category: 'queue',
     description: 'Get info of item from queue',
-    tags: ['username'],
+    tags: [],
     params: true,
     async execute(client, channel, tags, username, message, parameters) {
+        console.log("message params: " + message)
         const result = searchQueue(parameters);  // Assuming `parameters` is an array and levelId is the first element.
         const gd = new GD();
 
