@@ -13,7 +13,7 @@ module.exports = {
             if (hasReachedRequestLimit(username, isSubscriber)) {
                 client.say(channel, `Sorry, you have reached your request limit of ${isSubscriber ? limits.subscriberRequestLimit : limits.viewerRequestLimit} level(s).`);
             } else {
-                addLevelToQueue(levelId, isSubscriber, username, client);
+                addLevelToQueue(levelId, isSubscriber, tags.username, client);
             }
         } else {
             client.say(channel, 'Invalid level ID. Please provide a level ID between 3 and 9 characters.');
@@ -29,11 +29,10 @@ module.exports = {
  * @return {number|null} - The extracted level ID, or null if it doesn't meet the criteria.
  */
 function extractLevelId(message) {
-    const levelId = message;
-    const isNumeric = /^\d+$/.test(levelId); // Check if levelId is numeric
+    const levelId = message.match(/\d+/); // Match the first group of digits
 
-    if (levelId && levelId.length >= 3 && levelId.length <= 9 && isNumeric) {
-        return parseInt(levelId, 10);
+    if (levelId && levelId[0].length >= 3 && levelId[0].length <= 9) {
+        return parseInt(levelId[0], 10);
     }
 
     return null;
