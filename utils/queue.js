@@ -73,6 +73,14 @@ function hasReachedRequestLimit(username, isSubscriber) {
  * @return {void} - This function does not return any value.
  */
 function addLevelToQueue(levelId, isSubscriber, username, client) {
+    // check if level already exists in either queue before adding
+    const existingLevel = searchQueue(levelId);
+    if (existingLevel !== 'Level was not found in either queue.') {
+        client.say(botConfig.channel, `Level ${levelId} is already in the queue.`);
+        return;
+    }
+
+    // rest of code remains the same
     if (isSubscriber && !modes.sub) {
         viewerQueue.push({ levelId, isSubscriber: false, username });
         saveViewerQueue(); // Save the viewer queue
@@ -118,7 +126,7 @@ function clearQueue() {
 /**
  * Removes a level from the queue by level ID.
  *
- * @param {string} levelId - The ID of the level to be removed.
+ * @param {number|null} levelId - The ID of the level to be removed.
  * @return {string} - A message indicating the result of the removal operation.
  *                    Possible messages are:
  *                    - "No level ID was submitted for removal." if levelId is not provided.
@@ -170,6 +178,51 @@ function searchQueue(levelId) {
     }
 
     return 'Level was not found in either queue.';
+}
+
+/**
+ * Gets the position of a level in either the viewer or subscriber queue.
+ *
+ * @param {string} levelId - The ID of the level to find.
+ * @returns {Object|string} Returns an object with the position and queue type,
+ *                          or an error message if the level is not found.
+ *
+ * @example
+ *
+ * // Assuming that level 123 is at position 1 in the viewer queue
+ * getQueuePosition('123');
+ * // returns { position: 1, queue: 'Viewer' }
+ *
+ * // Assuming that level 456 is at position 8 in the subscriber queue
+ * getQueuePosition('456');
+ * // returns { position: 8, queue: 'Subscriber' }
+ *
+ * getQueuePosition('789');
+ * // returns 'Level was not found in either queue.'
+ */
+function getQueuePosition(levelId) {
+    if (!levelId) {
+        return 'No level ID was submitted for search.';
+    }
+
+    const levelIdNumber = parseInt(levelId, 10);
+
+    const levelInViewerQueueIndex = viewerQueue.findIndex((level) => level.levelId === levelIdNumber);
+    const levelInSubscriberQueueIndex = subscriberQueue.findIndex((level) => level.levelId === levelIdNumber);
+
+    if (levelInViewerQueueIndex >= 0) {
+        return {position: levelInViewerQueueIndex + 1, queue: 'Viewer'}; // Add 1 to make the position 1-based instead of 0-based
+    }
+
+    if (levelInSubscriberQueueIndex >= 0) {
+        return {position: levelInSubscriberQueueIndex + 1, queue: 'Subscriber'}; // Add 1 to make the position 1-based instead of 0-based
+    }
+
+    if (modes.sub) {
+        return 'Level was not found in either queue.';
+    } else {
+        return 'Level was not found in the queue.';
+    }
 }
 
 // Streamer or moderator gets a random level from the queue
@@ -290,6 +343,9 @@ function getCurrentSubscriberLevel() {
 }
 
 // Get the formatted viewer queue message
+// Set a constant for the number of items per page
+const ITEMS_PER_PAGE = 5;
+
 /**
  * Retrieve the viewer queue message.
  *
@@ -299,48 +355,74 @@ function getCurrentSubscriberLevel() {
  *
  * @returns {string} - The viewer queue message.
  */
-function getViewerQueueMessage() {
+function getViewerQueueMessage(pageNumber = 1, itemsPerPage = ITEMS_PER_PAGE) {
+    // console.log(`getViewerQueueMessage called with pageNumber: ${pageNumber} and itemsPerPage: ${itemsPerPage}`);
+
     if (viewerQueue.length === 0) {
+        console.log('Viewer Queue is empty.');
         return 'Viewer Queue is empty.';
     }
 
-    const filteredQueue = viewerQueue.filter((level) => !level.removed); // Remove levels marked as removed
+    const totalPages = Math.ceil(viewerQueue.length / itemsPerPage);
+
+    const start = (pageNumber - 1) * itemsPerPage;
+    const end = start + itemsPerPage;
+    const pageViewerQueue = viewerQueue.slice(start, end);
+
+    // console.log(`pageViewerQueue: ${JSON.stringify(pageViewerQueue)}`);
+
+    const filteredQueue = pageViewerQueue.filter((level) => !level.removed);
 
     if (filteredQueue.length === 0) {
+        // console.log('Filtered Viewer Queue is empty.');
         return 'Viewer Queue is empty.';
     }
 
-    const queueMessage = filteredQueue
-        .map((level, index) => `#${index + 1}: Level ${level.levelId} (Submitted by: ${level.username})`)
-        .join(' | ');
+    const queueMessage = filteredQueue.map((level, index) => `#${start + index + 1}: Level ${level.levelId} (Submitted by: ${level.username})`).join(' | ');
 
-    return `Viewer Queue: ${queueMessage}`;
+    // console.log(`Viewer Queue Message: ${queueMessage}`);
+
+    return `Viewer Queue (Page ${pageNumber}/${totalPages}): ${queueMessage}`;
 }
 
-// Get the formatted subscriber queue message
-/**
- *
- */
-function getSubscriberQueueMessage() {
+function getSubscriberQueueMessage(pageNumber = 1, itemsPerPage = ITEMS_PER_PAGE) {
+    // console.log(`getSubscriberQueueMessage called with pageNumber: ${pageNumber} and itemsPerPage: ${itemsPerPage}`);
+
     if (!modes.sub) {
+        // console.log('Subscriber Queue is currently disabled.');
         return 'Subscriber Queue is currently disabled.';
     }
 
-    if (subscriberQueue.length === 0) {
-        return 'Subscriber Queue is empty.';
+    const totalPages = Math.ceil(subscriberQueue.length / itemsPerPage);
+
+    const start = (pageNumber - 1) * itemsPerPage;
+    const end = start + itemsPerPage;
+    const pageSubscriberQueue = subscriberQueue.slice(start, end);
+
+    // console.log(`pageSubscriberQueue: ${JSON.stringify(pageSubscriberQueue)}`);
+
+    if (pageSubscriberQueue.length === 0) {
+        // console.log('No level in the subscriber queue.');
+        return 'No level in the subscriber queue.';
     }
 
-    const filteredQueue = subscriberQueue.filter((level) => !level.removed);
+    const queueMessage = pageSubscriberQueue.map((level, index) => `#${start + index + 1}: Level ${level.levelId} (Submitted by: ${level.username})`).join(' | ');
 
-    if (filteredQueue.length === 0) {
-        return 'Subscriber Queue is empty.';
-    }
+    // console.log(`Subscriber Queue Message: ${queueMessage}`);
 
-    const queueMessage = filteredQueue
-        .map((level, index) => `#${index + 1}: Level ${level.levelId} (Submitted by: ${level.username})`)
-        .join(' | ');
-
-    return `Subscriber Queue: ${queueMessage}`;
+    return `Subscriber Queue (Page ${pageNumber}/${totalPages}): ${queueMessage}`;
 }
 
-module.exports  = { hasReachedRequestLimit, addLevelToQueue, getViewerQueueMessage, getSubscriberQueueMessage, removeLevel, clearQueue, goToNextLevel, saveSubscriberQueue, saveViewerQueue, searchQueue};
+module.exports = {
+    hasReachedRequestLimit,
+    addLevelToQueue,
+    getViewerQueueMessage,
+    getSubscriberQueueMessage,
+    getQueuePosition,
+    removeLevel,
+    clearQueue,
+    goToNextLevel,
+    saveSubscriberQueue,
+    saveViewerQueue,
+    searchQueue
+};

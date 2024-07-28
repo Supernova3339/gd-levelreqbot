@@ -2,13 +2,16 @@
   "name": "gd-levelreqbot",
   "author": "Supernova3339",
   "main": "main.js",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "dependencies": {
+    "adm-zip": "^0.5.14",
     "axios": "^1.7.2",
     "figlet": "^1.7.0",
     "fs": "^0.0.1-security",
+    "fs-extra": "^11.2.0",
     "node-fetch": "^3.3.2",
-    "tmi.js": "^1.8.5"
+    "tmi.js": "^1.8.5",
+    "which": "^4.0.0"
   },
   "scripts": {
     "start": "node main.js",

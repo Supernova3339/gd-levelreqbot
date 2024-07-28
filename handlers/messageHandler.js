@@ -12,20 +12,20 @@ function handleMessage(client) {
         if (client.commands.has(commandName)) {
             const command = client.commands.get(commandName);
 
+            // Permission validation: only for commands with specified tags
             if(command.tags && command.tags.length > 0) {
-                const hasPermission = command.tags.some(tag => tags.badges && tag in tags.badges);
+                const hasPermission = command.tags.some(tag => tags[tag]);
                 if (!hasPermission) {
-                    return;
+                    return; // Do nothing if user does not have the necessary permission
                 }
             }
 
+            // Check if command requires parameters
             if (command.params && parameters.length > 0) {
-                command.execute(client, channel, tags, message, parameters);
+                command.execute(client, channel, tags, tags.username, message, parameters);
             } else if (!command.params) {
-                command.execute(client, channel, tags, message, parameters);
+                command.execute(client, channel, tags, tags.username, message);
             }
-        } else {
-            logConsole(`Command not found: ${commandName}`);
         }
     };
 }
