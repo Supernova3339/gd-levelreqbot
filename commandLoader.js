@@ -18,7 +18,7 @@ function loadCommands(client) {
                 readCommands(fullPath);
             } else {
                 const command = require(fullPath);
-                client.commands.set(command.name, {execute: command.execute, params: command.params || false});
+                client.commands.set(command.name, {execute: command.execute, params: command.params, tags: command.tags || false});
 
                 // log the command name and category.
                 logConsole(`${command.category}: ${command.name} | ${command.description} loaded`);
