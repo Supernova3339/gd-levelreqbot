@@ -1,6 +1,7 @@
 # gd-levelreqbot
 
 A "Simple" Level Request Bot For Twitch
+Hi Gumroad! Supernova3339 here. feel free to check through the codebase, everything is open source! Cloud will be as well, upon completion.
 
 # Features
 - Subscriber and Viewer queues ( persistent via JSON files )
