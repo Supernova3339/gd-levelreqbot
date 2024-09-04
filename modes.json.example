@@ -1,4 +1,5 @@
 {
   "gd": true,
-  "sub": false
+  "sub": false,
+  "smart": false
 }

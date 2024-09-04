@@ -13,7 +13,8 @@ module.exports = {
 
         if (badgeList.includes('broadcaster') || badgeList.includes('moderator')) {
             // Handle remove level command if the tags include 'broadcaster' or 'moderator'
-            const result = removeLevel(message);
+            const levelId = extractLevelId(message);
+            const result = removeLevel(levelId);
             client.say(channel, result);
         } else {
             // Perform a different action if the tags do not include 'broadcaster' or 'moderator'

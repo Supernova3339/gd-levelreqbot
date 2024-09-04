@@ -11,6 +11,7 @@ Hi Gumroad! Supernova3339 here. feel free to check through the codebase, everyth
 - Fully rewritten to be cleaner and more customizable
 - GD Mode | change your queue to be geometry dash powered
 - Sub Mode | enable or disable subscriber queue
+- Smart Mode | add smart features to improve your users experience
 - Intuitive updater
 - Data Backups
 
@@ -27,7 +28,7 @@ Install dependencies with NPM
 npm ci
 ```
 
-Rename all **.json.example** to **.json**
+Rename all **.json.example** files to **.json**
 
 Run the bot ( if you want keepalive please use `pm2` ) - note that if updating you will experience a restart loop
 temporarily.

@@ -1,7 +1,7 @@
 const limits = require('../limits.json');
 const fs = require("node:fs");
 const botConfig = require('../auth-config.json');
-const modes = require ('../modes.json');
+const modes = require('../modes.json');
 
 let viewerQueue = [];
 let subscriberQueue = [];
@@ -69,20 +69,23 @@ function hasReachedRequestLimit(username, isSubscriber) {
  * @param {boolean} isSubscriber - Indicates whether the user is a subscriber or not.
  * @param {string} username - The username of the user.
  * @param {function} client - Hook for TMI.js
+ * @param {boolean} noFeedbackMessage - Indicates weather to disable a feedback message or not
  *
  * @return {void} - This function does not return any value.
  */
-function addLevelToQueue(levelId, isSubscriber, username, client) {
+function addLevelToQueue(levelId, isSubscriber, username, client, noFeedbackMessage) {
     // check if level already exists in either queue before adding
     const existingLevel = searchQueue(levelId);
     if (existingLevel !== 'Level was not found in either queue.') {
-        client.say(botConfig.channel, `Level ${levelId} is already in the queue.`);
+        if (!noFeedbackMessage) {
+            client.say(botConfig.channel, `Level ${levelId} is already in the queue.`);
+        }
         return;
     }
 
     // rest of code remains the same
     if (isSubscriber && !modes.sub) {
-        viewerQueue.push({ levelId, isSubscriber: false, username });
+        viewerQueue.push({levelId, isSubscriber: false, username});
         saveViewerQueue(); // Save the viewer queue
         client.say(botConfig.channel, `Level ${levelId} added to the queue for ${username}.`);
         return;
@@ -99,9 +102,9 @@ function addLevelToQueue(levelId, isSubscriber, username, client) {
         return;
     }
 
-    queue.push({ levelId, isSubscriber, username });
+    queue.push({levelId, isSubscriber, username});
 
-    if(isSubscriber) {
+    if (isSubscriber) {
         saveSubscriberQueue(); // Save the subscriber queue
     } else {
         saveViewerQueue(); // Save the viewer queue
@@ -301,7 +304,11 @@ function goToNextLevel() {
         const isViewerQueueEmpty = viewerQueue.length === 0;
 
         if (isSubscriberQueueEmpty && isViewerQueueEmpty) {
-            return 'Both the subscriber and viewer queues are currently empty.';
+            if(modes.sub) {
+                return 'Both the subscriber and viewer queues are currently empty.';
+            } else {
+                return 'The viewer queue is currently empty.';
+            }
         }
     }
 }
@@ -319,7 +326,7 @@ function getCurrentViewerLevel() {
         return 'No level in the viewer queue.';
     }
 
-    const { levelId, username } = viewerQueue[0];
+    const {levelId, username} = viewerQueue[0];
     return `Viewer Level ${levelId} (Submitted by: ${username})`;
 }
 
@@ -338,7 +345,7 @@ function getCurrentSubscriberLevel() {
         return 'No level in the subscriber queue.';
     }
 
-    const { levelId, username } = subscriberQueue[0];
+    const {levelId, username} = subscriberQueue[0];
     return `Subscriber Level ${levelId} (Submitted by: ${username})`;
 }
 
