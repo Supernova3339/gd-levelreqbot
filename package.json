@@ -2,7 +2,7 @@
   "name": "gd-levelreqbot",
   "author": "Supernova3339",
   "main": "main.js",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "dependencies": {
     "adm-zip": "^0.5.14",
     "axios": "^1.7.2",

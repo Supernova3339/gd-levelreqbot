@@ -1,6 +1,6 @@
 const {
     getQueuePosition, removeLevel, addLevelToQueue, goToNextLevel, getSubscriberQueueMessage,
-    getViewerQueueMessage
+    getViewerQueueMessage, clearQueue
 } = require("../queue");
 const limits = require("../../limits.json");
 
@@ -40,8 +40,8 @@ async function removeFromQueue(req, res) {
 
 async function clearEntireQueue(req, res) {
     try {
-        // const result = clearQueue();
-        const result = "queue not actually cleared";
+        const result = clearQueue();
+        // const result = "queue not actually cleared";
 
         res.status(200).send(result);
     } catch (error) {
@@ -100,7 +100,7 @@ async function listQueueItems(req, res) {
         const itemsPerPage = isNaN(Number(requestData['items'])) ? 5 : Number(requestData['items']); // Fallback to 5 if invalid
         const queueType = requestData['queueType'] || "viewer"; // Fallback to viewer
 
-        console.log("Request Data:", (requestData));
+        // console.log("Request Data:", (requestData));
 
         let queueMessage;
 

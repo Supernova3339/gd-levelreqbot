@@ -22,6 +22,6 @@ process.on('SIGINT', () => {
     process.exit();
 });
 
-if (!botConfig.WebAPIToken) { // if API token doesnt exist, don't start web module to avoid erroring out
+if (botConfig.WebAPIToken) { // if API token doesnt exist, don't start web module to avoid erroring out
     initializeWebModule();
 }

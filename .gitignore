@@ -5,3 +5,4 @@ viewers.json
 auth-config.json*
 modes.json*
 limits.json*
+backups/*
