@@ -4,6 +4,7 @@ const checkForUpdates = require('./modules/updateModule.js');
 const {saveSubscriberQueue, saveViewerQueue} = require("./utils/queue");
 const handleIDMessage = require("./handlers/smartHandler");
 const modes = require('./modes.json');
+const botConfig = require('./auth-config.json');
 const {initializeWebModule} = require("./modules/webModule");
 
 // Check for updates
@@ -21,4 +22,6 @@ process.on('SIGINT', () => {
     process.exit();
 });
 
-initializeWebModule();
+if (!botConfig.WebAPIToken) { // if API token doesnt exist, don't start web module to avoid erroring out
+    initializeWebModule();
+}
