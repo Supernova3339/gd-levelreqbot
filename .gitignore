@@ -3,5 +3,5 @@ node_modules
 subscribers.json
 viewers.json
 auth-config.json*
-modes.json
-limits.json
+modes.json*
+limits.json*

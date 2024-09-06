@@ -8,6 +8,11 @@ module.exports = {
     tags: ['moderator', 'broadcaster'],
     execute(client, channel, tags, username, message, parameters) {
         const next = goToNextLevel();
-        client.say(channel, next);
+
+        if (next.message) {
+            client.say(channel, next.message);
+        } else {
+            client.say(channel, `Next ${next.queueType} Level: ${next.levelId} (Submitted by: ${next.username}). Run !info ${next.levelId} for more information!`);
+        }
     }
 };

@@ -1,6 +1,5 @@
 const limits = require('../limits.json');
 const fs = require("node:fs");
-const botConfig = require('../auth-config.json');
 const modes = require('../modes.json');
 
 let viewerQueue = [];
@@ -68,27 +67,25 @@ function hasReachedRequestLimit(username, isSubscriber) {
  * @param {number} levelId - The ID of the level to be added to the queue.
  * @param {boolean} isSubscriber - Indicates whether the user is a subscriber or not.
  * @param {string} username - The username of the user.
- * @param {function} client - Hook for TMI.js
- * @param {boolean} noFeedbackMessage - Indicates weather to disable a feedback message or not
+ * @param {?boolean} noFeedbackMessage - Indicates weather to disable a feedback message or not
  *
- * @return {void} - This function does not return any value.
+ * @return {string} - This function returns a string.
  */
-function addLevelToQueue(levelId, isSubscriber, username, client, noFeedbackMessage) {
+function addLevelToQueue(levelId, isSubscriber, username, noFeedbackMessage) {
     // check if level already exists in either queue before adding
     const existingLevel = searchQueue(levelId);
     if (existingLevel !== 'Level was not found in either queue.') {
         if (!noFeedbackMessage) {
-            client.say(botConfig.channel, `Level ${levelId} is already in the queue.`);
+            return(`Level ${levelId} is already in the queue.`);
         }
-        return;
+        return '';
     }
 
     // rest of code remains the same
     if (isSubscriber && !modes.sub) {
         viewerQueue.push({levelId, isSubscriber: false, username});
         saveViewerQueue(); // Save the viewer queue
-        client.say(botConfig.channel, `Level ${levelId} added to the queue for ${username}.`);
-        return;
+        return(`Level ${levelId} added to the queue for ${username}.`);
     }
 
     const queue = isSubscriber ? subscriberQueue : viewerQueue;
@@ -98,8 +95,7 @@ function addLevelToQueue(levelId, isSubscriber, username, client, noFeedbackMess
     const viewerLevels = queue.filter((level) => level.username === username);
 
     if (viewerLevels.length >= requestLimit) {
-        client.say(botConfig.channel, `Sorry, you have reached your request limit of ${requestLimit} level(s).`);
-        return;
+        return(`Sorry, you have reached your request limit of ${requestLimit} level(s).`);
     }
 
     queue.push({levelId, isSubscriber, username});
@@ -110,7 +106,7 @@ function addLevelToQueue(levelId, isSubscriber, username, client, noFeedbackMess
         saveViewerQueue(); // Save the viewer queue
     }
 
-    client.say(botConfig.channel, `Level ${levelId} added to the queue for ${username}.`);
+    return(`Level ${levelId} added to the queue for ${username}.`);
 }
 
 // Clear the entire level queue
@@ -229,45 +225,45 @@ function getQueuePosition(levelId) {
 }
 
 // Streamer or moderator gets a random level from the queue
-/**
- * Returns a random level from the queue based on probability.
- *
- * @returns {string} The selected level from the queue or a message indicating
- *  that both the subscriber and viewer queues are empty.
- */
-function getRandomLevelFromQueue() {
-    let selectedQueue;
-    let queueType;
-
-    // Generate a random number between 0 and 99
-    const randomChance = Math.floor(Math.random() * 100);
-
-    // Check if the subscriber queue is not empty and the random chance is below 60 (60% probability)
-    if (subscriberQueue.length > 0 && randomChance < 60) {
-        selectedQueue = subscriberQueue;
-        queueType = 'Subscriber';
-    } else if (viewerQueue.length > 0) {
-        selectedQueue = viewerQueue;
-        queueType = 'Viewer';
-    }
-
-    if (selectedQueue && selectedQueue.length > 0) {
-        const randomIndex = Math.floor(Math.random() * selectedQueue.length);
-        const randomLevel = selectedQueue[randomIndex];
-        selectedQueue.splice(randomIndex, 1); // Remove the level from the queue
-        saveSubscriberQueue(); // Save the subscriber queue
-        saveViewerQueue(); // Save the viewer queue
-        return `${queueType ? queueType + ' ' : ''}level ${randomLevel.levelId}`;
-    }
-
-    return 'Both the subscriber and viewer queues are currently empty.';
-}
+// /**
+//  * Returns a random level from the queue based on probability.
+//  *
+//  * @returns {string} The selected level from the queue or a message indicating
+//  *  that both the subscriber and viewer queues are empty.
+//  */
+// function getRandomLevelFromQueue() {
+//     let selectedQueue;
+//     let queueType;
+//
+//     // Generate a random number between 0 and 99
+//     const randomChance = Math.floor(Math.random() * 100);
+//
+//     // Check if the subscriber queue is not empty and the random chance is below 60 (60% probability)
+//     if (subscriberQueue.length > 0 && randomChance < 60) {
+//         selectedQueue = subscriberQueue;
+//         queueType = 'Subscriber';
+//     } else if (viewerQueue.length > 0) {
+//         selectedQueue = viewerQueue;
+//         queueType = 'Viewer';
+//     }
+//
+//     if (selectedQueue && selectedQueue.length > 0) {
+//         const randomIndex = Math.floor(Math.random() * selectedQueue.length);
+//         const randomLevel = selectedQueue[randomIndex];
+//         selectedQueue.splice(randomIndex, 1); // Remove the level from the queue
+//         saveSubscriberQueue(); // Save the subscriber queue
+//         saveViewerQueue(); // Save the viewer queue
+//         return `${queueType ? queueType + ' ' : ''}level ${randomLevel.levelId}`;
+//     }
+//
+//     return 'Both the subscriber and viewer queues are currently empty.';
+// }
 
 // Streamer or moderator goes to the next level in the queue
 /**
  * Moves to the next level in the selected queue based on certain conditions.
  *
- * @return {string} The information about the next level to go, or a message indicating that both the subscriber and viewer queues are empty.
+ * @return {Object} The information about the next level to go, or a message indicating that both the subscriber and viewer queues are empty.
  */
 function goToNextLevel() {
     let selectedQueue;
@@ -298,60 +294,62 @@ function goToNextLevel() {
         saveSubscriberQueue();
         saveViewerQueue();
 
-        return `Next ${queueType} Level: ${nextLevel}  (Submitted by: ${username}). Run !info ${nextLevel} for more information!`;
+        return {
+            queueType: queueType,
+            levelId: nextLevel,
+            username: username
+        };
     } else {
         const isSubscriberQueueEmpty = subscriberQueue.length === 0;
         const isViewerQueueEmpty = viewerQueue.length === 0;
 
         if (isSubscriberQueueEmpty && isViewerQueueEmpty) {
             if(modes.sub) {
-                return 'Both the subscriber and viewer queues are currently empty.';
+                return { message: 'Both the subscriber and viewer queues are currently empty.' };
             } else {
-                return 'The viewer queue is currently empty.';
+                return { message: 'The viewer queue is currently empty.' };
             }
         }
     }
 }
 
 // Get the current viewer level
-/**
- * Retrieves the current viewer level from the viewer queue.
- *
- * @returns {string} The current viewer level information.
- *   Returns "No level in the viewer queue." if the viewer queue is empty,
- *   otherwise returns a formatted string with the viewer level ID and username.
- */
-function getCurrentViewerLevel() {
-    if (viewerQueue.length === 0) {
-        return 'No level in the viewer queue.';
-    }
-
-    const {levelId, username} = viewerQueue[0];
-    return `Viewer Level ${levelId} (Submitted by: ${username})`;
-}
-
-// Get the current subscriber level
-/**
- * Retrieves the current subscriber level from the subscriber queue.
- * If there is no level in the queue, it returns a specific message indicating that.
- * If there is a level in the queue, it returns a formatted string with the level ID and username.
- *
- * @returns {string} The current subscriber level in the format:
- *                   "Subscriber Level <levelId> (Submitted by: <username>)"
- *                   or "No level in the subscriber queue." if the queue is empty.
- */
-function getCurrentSubscriberLevel() {
-    if (subscriberQueue.length === 0) {
-        return 'No level in the subscriber queue.';
-    }
-
-    const {levelId, username} = subscriberQueue[0];
-    return `Subscriber Level ${levelId} (Submitted by: ${username})`;
-}
+// /**
+//  * Retrieves the current viewer level from the viewer queue.
+//  *
+//  * @returns {string} The current viewer level information.
+//  *   Returns "No level in the viewer queue." if the viewer queue is empty,
+//  *   otherwise returns a formatted string with the viewer level ID and username.
+//  */
+// function getCurrentViewerLevel() {
+//     if (viewerQueue.length === 0) {
+//         return 'No level in the viewer queue.';
+//     }
+//
+//     const {levelId, username} = viewerQueue[0];
+//     return `Viewer Level ${levelId} (Submitted by: ${username})`;
+// }
+//
+// // Get the current subscriber level
+// /**
+//  * Retrieves the current subscriber level from the subscriber queue.
+//  * If there is no level in the queue, it returns a specific message indicating that.
+//  * If there is a level in the queue, it returns a formatted string with the level ID and username.
+//  *
+//  * @returns {string} The current subscriber level in the format:
+//  *                   "Subscriber Level <levelId> (Submitted by: <username>)"
+//  *                   or "No level in the subscriber queue." if the queue is empty.
+//  */
+// function getCurrentSubscriberLevel() {
+//     if (subscriberQueue.length === 0) {
+//         return 'No level in the subscriber queue.';
+//     }
+//
+//     const {levelId, username} = subscriberQueue[0];
+//     return `Subscriber Level ${levelId} (Submitted by: ${username})`;
+// }
 
 // Get the formatted viewer queue message
-// Set a constant for the number of items per page
-const ITEMS_PER_PAGE = 5;
 
 /**
  * Retrieve the viewer queue message.
@@ -362,63 +360,82 @@ const ITEMS_PER_PAGE = 5;
  *
  * @returns {string} - The viewer queue message.
  */
-function getViewerQueueMessage(pageNumber = 1, itemsPerPage = ITEMS_PER_PAGE) {
-    // console.log(`getViewerQueueMessage called with pageNumber: ${pageNumber} and itemsPerPage: ${itemsPerPage}`);
-
+function getViewerQueueMessage(pageNumber = 1, itemsPerPage = 5) {
+    // If viewerQueue is empty, return a message indicating that
     if (viewerQueue.length === 0) {
-        console.log('Viewer Queue is empty.');
-        return 'Viewer Queue is empty.';
+        return {
+            message: 'Viewer Queue is empty.',
+            page: pageNumber,
+            totalPages: 0,
+            itemsPerPage: itemsPerPage,
+            data: []
+        };
     }
 
+    // Calculate total pages
     const totalPages = Math.ceil(viewerQueue.length / itemsPerPage);
 
-    const start = (pageNumber - 1) * itemsPerPage;
+    // Ensure page number is within valid bounds
+    const validPageNumber = Math.max(1, Math.min(pageNumber, totalPages));
+
+    // Calculate start and end indices for pagination
+    const start = (validPageNumber - 1) * itemsPerPage;
     const end = start + itemsPerPage;
+
+    // Get the appropriate slice of the queue for the current page
     const pageViewerQueue = viewerQueue.slice(start, end);
 
-    // console.log(`pageViewerQueue: ${JSON.stringify(pageViewerQueue)}`);
-
-    const filteredQueue = pageViewerQueue.filter((level) => !level.removed);
-
-    if (filteredQueue.length === 0) {
-        // console.log('Filtered Viewer Queue is empty.');
-        return 'Viewer Queue is empty.';
-    }
-
-    const queueMessage = filteredQueue.map((level, index) => `#${start + index + 1}: Level ${level.levelId} (Submitted by: ${level.username})`).join(' | ');
-
-    // console.log(`Viewer Queue Message: ${queueMessage}`);
-
-    return `Viewer Queue (Page ${pageNumber}/${totalPages}): ${queueMessage}`;
+    return {
+        message: `Viewer Queue (Page ${validPageNumber}/${totalPages})`,
+        page: validPageNumber,
+        totalPages: totalPages,
+        itemsPerPage: itemsPerPage,
+        data: pageViewerQueue.map((level, index) => ({
+            position: start + index + 1,
+            levelId: level.levelId,
+            username: level.username
+        }))
+    };
 }
 
-function getSubscriberQueueMessage(pageNumber = 1, itemsPerPage = ITEMS_PER_PAGE) {
-    // console.log(`getSubscriberQueueMessage called with pageNumber: ${pageNumber} and itemsPerPage: ${itemsPerPage}`);
-
+function getSubscriberQueueMessage(pageNumber = 1, itemsPerPage = 5) {
+    // If the subscriber queue is disabled, return a message
     if (!modes.sub) {
-        // console.log('Subscriber Queue is currently disabled.');
-        return 'Subscriber Queue is currently disabled.';
+        return {
+            message: 'Subscriber Queue is currently disabled.',
+            page: pageNumber,
+            totalPages: 0,
+            itemsPerPage: itemsPerPage,
+            data: []
+        };
     }
 
+    // Calculate total pages
     const totalPages = Math.ceil(subscriberQueue.length / itemsPerPage);
 
-    const start = (pageNumber - 1) * itemsPerPage;
+    // Ensure page number is within valid bounds
+    const validPageNumber = Math.max(1, Math.min(pageNumber, totalPages));
+
+    // Calculate start and end indices for pagination
+    const start = (validPageNumber - 1) * itemsPerPage;
     const end = start + itemsPerPage;
+
+    // Get the appropriate slice of the queue for the current page
     const pageSubscriberQueue = subscriberQueue.slice(start, end);
 
-    // console.log(`pageSubscriberQueue: ${JSON.stringify(pageSubscriberQueue)}`);
-
-    if (pageSubscriberQueue.length === 0) {
-        // console.log('No level in the subscriber queue.');
-        return 'No level in the subscriber queue.';
-    }
-
-    const queueMessage = pageSubscriberQueue.map((level, index) => `#${start + index + 1}: Level ${level.levelId} (Submitted by: ${level.username})`).join(' | ');
-
-    // console.log(`Subscriber Queue Message: ${queueMessage}`);
-
-    return `Subscriber Queue (Page ${pageNumber}/${totalPages}): ${queueMessage}`;
+    return {
+        message: `Subscriber Queue (Page ${validPageNumber}/${totalPages})`,
+        page: validPageNumber,
+        totalPages: totalPages,
+        itemsPerPage: itemsPerPage,
+        data: pageSubscriberQueue.map((level, index) => ({
+            position: start + index + 1,
+            levelId: level.levelId,
+            username: level.username
+        }))
+    };
 }
+
 
 module.exports = {
     hasReachedRequestLimit,

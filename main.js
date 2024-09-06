@@ -4,6 +4,7 @@ const checkForUpdates = require('./modules/updateModule.js');
 const {saveSubscriberQueue, saveViewerQueue} = require("./utils/queue");
 const handleIDMessage = require("./handlers/smartHandler");
 const modes = require('./modes.json');
+const {initializeWebModule} = require("./modules/webModule");
 
 // Check for updates
 checkForUpdates(client);
@@ -19,3 +20,5 @@ process.on('SIGINT', () => {
     saveViewerQueue();
     process.exit();
 });
+
+initializeWebModule();

@@ -13,7 +13,8 @@ module.exports = {
             if (hasReachedRequestLimit(username, isSubscriber)) {
                 client.say(channel, `Sorry, you have reached your request limit of ${isSubscriber ? limits.subscriberRequestLimit : limits.viewerRequestLimit} level(s).`);
             } else {
-                addLevelToQueue(levelId, isSubscriber, tags.username, client);
+                const result = addLevelToQueue(levelId, isSubscriber, tags.username, client);
+                client.say(channel, result)
             }
         } else {
             client.say(channel, 'Invalid level ID. Please provide a level ID between 3 and 9 characters.');

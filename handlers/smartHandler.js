@@ -18,7 +18,8 @@ function handleIDMessage(client) {
                     client.say(channel, `Sorry, you have reached your request limit of ${isSubscriber ? limits.subscriberRequestLimit : limits.viewerRequestLimit} level(s).`);
                 } else {
                     const noFeedbackMessage = true; // Set noFeedbackMessage to true
-                    addLevelToQueue(levelId, isSubscriber, tags.username, client, noFeedbackMessage);
+                    const result =  addLevelToQueue(levelId, isSubscriber, tags.username, noFeedbackMessage);
+                    client.say(channel, result);
                 }
             } else {
                 client.say(channel, 'Invalid level ID. Please provide a level ID between 3 and 9 characters.');

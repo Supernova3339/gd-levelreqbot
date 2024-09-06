@@ -259,9 +259,11 @@ async function checkForUpdates(client, isTwitch) {
             }
         } else {
             logConsole('User has the latest version. No update needed.');
+            return('User has the latest version. No update needed.');
         }
     } catch (error) {
         logConsole(`Error checking for updates: ${error.message}`);
+        return(`Error checking for updates: ${error.message}`);
     }
 }
 

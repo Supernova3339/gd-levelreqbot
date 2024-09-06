@@ -2,6 +2,7 @@
   "botUsername": "botusername",
   "botToken": "bot-token",
   "channel": "channel-connected-to",
-  "streamerUsername": "streamer-connected-to"
+  "streamerUsername": "streamer-connected-to",
+  "WebAPIToken": "your-secure-api-token-here"
 }
 

@@ -1,4 +1,4 @@
-const {getViewerQueueMessage, getSubscriberQueueMessage} = require("../../utils/queue");
+const { getViewerQueueMessage, getSubscriberQueueMessage } = require("../../utils/queue");
 const modes = require('../../modes.json');
 
 module.exports = {
@@ -9,36 +9,53 @@ module.exports = {
     params: false,
 
     async execute(client, channel, tags, username, message, parameters) {
-        const pageNumber = extractPageNumber(message);
+        // Extract page number and optionally items per page from the command message
+        const { pageNumber, itemsPerPage } = extractPageAndItems(message);
 
-        const viewerQueueMessage = getViewerQueueMessage(pageNumber);
-        client.say(channel, viewerQueueMessage);
+        // Get the viewer queue message as JSON
+        const viewerQueue = getViewerQueueMessage(pageNumber, itemsPerPage);
+        client.say(channel, formatQueueMessage(viewerQueue));
 
+        // If subscriber mode is enabled, get and send the subscriber queue message
         if (modes.sub) {
-            const subscriberQueueMessage = getSubscriberQueueMessage(pageNumber);
-            client.say(channel, subscriberQueueMessage);
+            const subscriberQueue = getSubscriberQueueMessage(pageNumber, itemsPerPage);
+            client.say(channel, formatQueueMessage(subscriberQueue));
         }
     },
 };
 
 /**
- * Extracts the page number from a given command message.
+ * Extracts the page number and itemsPerPage from a given command message.
  *
- * @param {string} message - The command message containing the page number.
- * @return {number} - The extracted pageNumber, or 1 if not supplied or doesn't meet the criteria.
+ * @param {string} message - The command message containing the page number and optional itemsPerPage.
+ * @return {object} - The extracted pageNumber and itemsPerPage, or defaults if not supplied.
  */
-function extractPageNumber(message) {
+function extractPageAndItems(message) {
     const splitMessage = message.split(' ');
 
-    if (splitMessage.length < 2) {
-        return 1;
+    const pageNumber = splitMessage[1] && /^\d+$/.test(splitMessage[1])
+        ? parseInt(splitMessage[1], 10)
+        : 1;
+
+    const itemsPerPage = splitMessage[2] && /^\d+$/.test(splitMessage[2])
+        ? parseInt(splitMessage[2], 10)
+        : 5;
+
+    return { pageNumber, itemsPerPage };
+}
+
+/**
+ * Formats the queue message for client.say output.
+ *
+ * @param {object} queueData - The queue data returned by the queue functions.
+ * @return {string} - The formatted queue message string.
+ */
+function formatQueueMessage(queueData) {
+    if (!queueData.data.length) {
+        return queueData.message;
     }
 
-    const pageNumber = splitMessage[1];
+    const queueItems = queueData.data.map(item => `#${item.position}: Level ${item.levelId} (Submitted by: ${item.username})`).join(' | ');
 
-    if (pageNumber && /^\d+$/.test(pageNumber)) {
-        return parseInt(pageNumber, 10);
-    }
-
-    return 1;
+    return `${queueData.message}: ${queueItems}`;
 }

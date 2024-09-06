@@ -18,7 +18,11 @@ function loadCommands(client) {
                 readCommands(fullPath);
             } else {
                 const command = require(fullPath);
-                client.commands.set(command.name, {execute: command.execute, params: command.params, tags: command.tags || false});
+                client.commands.set(command.name, {
+                    execute: command.execute,
+                    params: command.params,
+                    tags: command.tags || false
+                });
 
                 // log the command name and category.
                 logConsole(`${command.category}: ${command.name} | ${command.description} loaded`);
@@ -33,7 +37,7 @@ function loadCommands(client) {
     readCommands(baseDirectory);
 }
 
-function fetchCommands() {
+function fetchCommands(showSystemCommands) {
     const baseDirectory = path.resolve(__dirname, './commands');
     let commandsArray = [];
 
@@ -49,13 +53,24 @@ function fetchCommands() {
             } else {
                 const command = require(fullPath);
                 // Exclude commands from the 'system' category
-                if (command.category !== 'system') {
+                if (showSystemCommands) {
                     commandsArray.push({
                         name: command.name,
+                        description: command.description,
                         execute: command.execute,
                         category: command.category,
                         params: command.params || false
                     });
+                } else {
+                    if (command.category !== 'system') {
+                        commandsArray.push({
+                            name: command.name,
+                            description: command.description,
+                            execute: command.execute,
+                            category: command.category,
+                            params: command.params || false
+                        });
+                    }
                 }
             }
         }
