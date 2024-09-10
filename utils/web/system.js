@@ -1,5 +1,6 @@
 const checkForUpdates = require("../../modules/updateModule");
 const {fetchCommands} = require("../../commandLoader");
+const pkg = require("../../package.json");
 
 async function checkServerForUpdates(req, res){
     try {
@@ -51,4 +52,13 @@ async function listServerCommands(req, res) {
     }
 }
 
-module.exports = { checkServerForUpdates, listServerCommands }
+async function sendClientVersion(req, res){
+    const version = pkg.version;
+    res.status(200).send({version});
+}
+
+async function healthcheck(req, res){
+    res.status(200).send('OK');
+}
+
+module.exports = { checkServerForUpdates, listServerCommands, sendClientVersion, healthcheck }
