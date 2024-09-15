@@ -22,7 +22,7 @@ function handleIDMessage(client) {
                     client.say(channel, result);
                 }
             } else {
-                client.say(channel, 'Invalid level ID. Please provide a level ID between 3 and 9 characters.');
+                // client.say(channel, 'Invalid level ID. Please provide a level ID between 3 and 9 characters.');
             }
         }
     };

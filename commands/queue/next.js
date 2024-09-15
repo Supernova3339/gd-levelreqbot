@@ -1,4 +1,5 @@
 const { goToNextLevel } = require("../../utils/queue");
+const logConsole = require("../../logger");
 
 module.exports = {
     name: '!next',

@@ -410,6 +410,16 @@ function getSubscriberQueueMessage(pageNumber = 1, itemsPerPage = 5) {
         };
     }
 
+    if (subscriberQueue.length === 0) {
+        return {
+            message: 'Subscriber Queue is empty.',
+            page: pageNumber,
+            totalPages: 0,
+            itemsPerPage: itemsPerPage,
+            data: []
+        };
+    }
+
     // Calculate total pages
     const totalPages = Math.ceil(subscriberQueue.length / itemsPerPage);
 
