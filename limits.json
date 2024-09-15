@@ -1,4 +1,4 @@
 {
-  "viewerRequestLimit": 2,
+  "viewerRequestLimit": 1,
   "subscriberRequestLimit": 5
 }
