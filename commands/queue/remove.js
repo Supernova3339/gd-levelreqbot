@@ -1,4 +1,5 @@
 const {removeLevel, searchQueue} = require("../../utils/queue");
+const logConsole = require("../../logger");
 
 module.exports = {
     name: '!remove',
@@ -9,7 +10,12 @@ module.exports = {
     execute(client, channel, tags, username, message) {
 
         // Get the keys of the badges object as an array
-        const badgeList = Object.keys(tags['badges']);
+        let badgeList = Object.keys(tags['badges']);
+
+        // Check if the user has any badges
+        if (badgeList.length === 0) {
+            badgeList = [];
+        }
 
         if (badgeList.includes('broadcaster') || badgeList.includes('moderator')) {
             // Handle remove level command if the tags include 'broadcaster' or 'moderator'
