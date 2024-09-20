@@ -3,6 +3,7 @@ const modes = require("../../modes.json");
 const logConsole = require("../../logger");
 const {getGJLevels21, getGJUsers20} = require("../../utils/gd");
 const axios = require('axios');
+const {channel} = require("tmi.js/lib/utils");
 
 module.exports = {
     name: '!info',

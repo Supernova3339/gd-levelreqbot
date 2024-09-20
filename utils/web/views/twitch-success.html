@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitch Auth Success</title>
+    <style>
+        /* Apply a minimalistic black-and-white color scheme */
+        body {
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f5f5f5; /* Light grey background */
+            color: #333; /* Dark grey text */
+        }
+
+        /* Container for the success message */
+        .success-container {
+            background-color: #fff; /* White background for the card */
+            border-radius: 8px;
+            padding: 2rem;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+            position: relative; /* Required for positioning confetti */
+            overflow: hidden; /* Hide confetti outside the container */
+        }
+
+        h1 {
+            color: #000; /* Black text for the heading */
+            font-size: 2rem;
+            margin-bottom: 1rem;
+        }
+
+        p {
+            font-size: 1.2rem;
+            color: #666; /* Light grey text for the paragraph */
+            margin-bottom: 1.5rem;
+        }
+
+        /* Minimalistic button */
+        .button {
+            background-color: #000; /* Black button background */
+            color: #fff; /* White button text */
+            padding: 10px 20px;
+            text-decoration: none;
+            font-size: 1rem;
+            border-radius: 4px;
+            border: 1px solid #000; /* Black border */
+            display: inline-block;
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+
+        /* Button hover effect */
+        .button:hover {
+            background-color: #fff; /* White button background on hover */
+            color: #000; /* Black text on hover */
+        }
+
+        /* Responsive design */
+        @media (max-width: 500px) {
+            .success-container {
+                padding: 1.5rem;
+            }
+
+            h1 {
+                font-size: 1.8rem;
+            }
+
+            p {
+                font-size: 1rem;
+            }
+
+            .button {
+                padding: 8px 16px;
+                font-size: 0.9rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="success-container">
+    <h1>Success!</h1>
+    <p>You have successfully authenticated with Twitch.</p>
+    <a class="button" href="https://github.com/supernova3339/gd-levelreqbot">Star Gd-LevelReqBot On GitHub</a>
+</div>
+
+<!-- Canvas Confetti JS -->
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+<script>
+    // Function to trigger confetti animation
+    function triggerConfetti() {
+        const duration = Infinity; // Duration of confetti in milliseconds
+        const end = Date.now() + duration;
+        const interval = 400; // Interval between confetti bursts
+
+        (function frame() {
+            // Check if confetti duration has ended
+            if (Date.now() < end) {
+                confetti({
+                    particleCount: 100,
+                    angle: 60,
+                    spread: 55,
+                    origin: {x: 0},
+                });
+                confetti({
+                    particleCount: 100,
+                    angle: 120,
+                    spread: 55,
+                    origin: {x: 1},
+                });
+                setTimeout(frame, interval);
+            }
+        })();
+    }
+
+    // Trigger confetti animation on page load
+    document.addEventListener('DOMContentLoaded', triggerConfetti);
+</script>
+</body>
+</html>

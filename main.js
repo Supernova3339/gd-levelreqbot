@@ -6,6 +6,7 @@ const handleIDMessage = require("./handlers/smartHandler");
 const modes = require('./modes.json');
 const botConfig = require('./auth-config.json');
 const {initializeWebModule} = require("./modules/webModule");
+const {betaMessage} = require("./commands/queue/info");
 
 // Check for updates
 checkForUpdates(client);

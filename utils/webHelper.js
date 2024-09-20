@@ -16,8 +16,14 @@ function checkBearerToken(req, res, next) {
 }
 
 // Helper function to create routes
-function createRoute(app, method, path, handler) {
-    app[method](path, checkBearerToken, handler);
+function createRoute(app, method, path, handler, excludeAuth = false) {
+    if (excludeAuth) {
+        // If excludeAuth is true, don't apply checkBearerToken middleware
+        app[method](path, handler);
+    } else {
+        // Apply checkBearerToken middleware for all other routes
+        app[method](path, checkBearerToken, handler);
+    }
 }
 
 module.exports = { createRoute };
