@@ -12,11 +12,15 @@
     "fs": "^0.0.1-security",
     "fs-extra": "^11.2.0",
     "handlebars": "^4.7.8",
+    "http-errors": "^2.0.0",
     "node-fetch": "^3.3.2",
     "opener": "^1.5.2",
     "passport": "^0.7.0",
     "passport-oauth": "^1.0.0",
+    "passport-twitch": "^1.0.3",
+    "remove": "^0.1.5",
     "tmi.js": "^1.8.5",
+    "twitch-passport": "^1.0.6",
     "which": "^4.0.0"
   },
   "scripts": {

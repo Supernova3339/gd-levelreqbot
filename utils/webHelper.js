@@ -16,13 +16,21 @@ function checkBearerToken(req, res, next) {
 }
 
 // Helper function to create routes
-function createRoute(app, method, path, handler, excludeAuth = false) {
+function createRoute(app, method, path, handler, excludeAuth = false, forceVerify = false) {
     if (excludeAuth) {
-        // If excludeAuth is true, don't apply checkBearerToken middleware
         app[method](path, handler);
     } else {
-        // Apply checkBearerToken middleware for all other routes
-        app[method](path, checkBearerToken, handler);
+        const middleware = [checkBearerToken];
+
+        // If forceVerify is true, add additional query parameter to the authentication request
+        if (forceVerify) {
+            middleware.push((req, res, next) => {
+                req.query.force_verify = true;
+                next();
+            });
+        }
+
+        app[method](path, middleware, handler);
     }
 }
 

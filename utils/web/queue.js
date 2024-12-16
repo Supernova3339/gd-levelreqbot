@@ -120,6 +120,23 @@ async function listQueueItems(req, res) {
     }
 }
 
+// Extract the level ID from the command message
+/**
+ * Extracts the level ID from a given message.
+ *
+ * @param {string} message - The message containing the level ID.
+ * @return {number|null} - The extracted level ID, or null if it doesn't meet the criteria.
+ */
+function extractLevelId(message) {
+    const levelId = message.match(/\d+/); // Match the first group of digits
+
+    if (levelId && levelId[0].length >= 3 && levelId[0].length <= 9) {
+        return parseInt(levelId[0], 10);
+    }
+
+    return null;
+}
+
 
 
 module.exports = {
@@ -128,5 +145,6 @@ module.exports = {
     clearEntireQueue,
     addDataToQueue,
     nextLevelInQueue,
-    listQueueItems
+    listQueueItems,
+    extractLevelId
 };

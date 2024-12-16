@@ -53,9 +53,8 @@ async function getGJUsers20(targetAccountID) {
 
     try {
         const response = await axios.post(url, data, {headers: headers});
-        const decodedUserData = decodeGJUser20Response(response.data);
         // Return the complete decodedLevels object
-        return decodedUserData;
+        return decodeGJUser20Response(response.data);
     } catch (error) {
         console.error(`Error: ${error}`)
     }
@@ -340,4 +339,21 @@ function decodeGJUser20Response(response) {
     return users;
 }
 
-module.exports = {decodeGJLevel21Response, decodeGJUser20Response, getGJUsers20, getGJLevels21}
+function getLevelLength(level) {
+    switch (level) {
+        case 1:
+            return "Tiny";
+        case 2:
+            return "Short";
+        case 3:
+            return "Long";
+        case 4:
+            return "XL";
+        case 5:
+            return "Platformer";
+        default:
+            return "unknown"; // Or handle invalid input as needed
+    }
+}
+
+module.exports = {decodeGJLevel21Response, decodeGJUser20Response, getGJUsers20, getGJLevels21, getLevelLength}

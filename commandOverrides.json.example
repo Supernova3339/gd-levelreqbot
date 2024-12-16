@@ -1,0 +1,5 @@
+{
+    "list": "queue",     // Changes !list to !queue
+    "help": "commands",  // Changes !help to !commands
+    "ping": "latency"    // Changes !ping to !latency
+}

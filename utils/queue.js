@@ -182,7 +182,7 @@ function searchQueue(levelId) {
 /**
  * Gets the position of a level in either the viewer or subscriber queue.
  *
- * @param {string} levelId - The ID of the level to find.
+ * @param {number|null} levelId - The ID of the level to find.
  * @returns {Object|string} Returns an object with the position and queue type,
  *                          or an error message if the level is not found.
  *

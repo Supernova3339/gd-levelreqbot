@@ -1,7 +1,7 @@
 const {getQueuePosition} = require("../../utils/queue");
 const modes = require("../../modes.json");
 const {getGJLevels21, getGJUsers20} = require("../../utils/gd");
-const {channel} = require("tmi.js/lib/utils");
+const {extractLevelId} = require("../../utils/web/queue");
 
 module.exports = {
     name: '!position',
@@ -34,26 +34,3 @@ module.exports = {
         }
     },
 };
-
-// Extract the level ID from the command message
-/**
- * Extracts the level ID from a given command message.
- *
- * @param {string} message - The command message containing the level ID.
- * @return {number|null} - The extracted level ID, or null if it doesn't meet the criteria.
- */
-function extractLevelId(message) {
-    const splitMessage = message.split(' ');
-
-    if (splitMessage.length < 2) {
-        return null;
-    }
-
-    const levelId = splitMessage[1];
-
-    if (levelId && levelId.length >= 1 && /^\d+$/.test(levelId)) {
-        return parseInt(levelId, 10);
-    }
-
-    return null;
-}
