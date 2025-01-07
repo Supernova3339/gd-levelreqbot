@@ -24,24 +24,23 @@ jobs:
           git config --global user.name "${{ github.repository_owner }}"
           git config --global user.email "${{ github.repository_owner }}@users.noreply.github.com"
 
+      - name: Clean repository
+        run: |
+          git reset --hard
+          git clean -fd
+
       - name: Fetch all branches
         run: |
           git fetch --all
 
-      - name: Set up mirror remote
+      - name: Process branches
         run: |
-          git remote remove mirror 2>/dev/null || true
-          git remote add mirror "https://${{ github.repository_owner }}:${{ secrets.MIRROR_PAT }}@github.com/GD-LevelReqBot/gd-levelreqbot.git"
-          git fetch mirror --prune
+          # Define essential branches to ensure they are mirrored
+          REQUIRED_BRANCHES=("main" "dev")
 
-      - name: Process each branch
-        run: |
-          # Fetch all branches from the source and mirror remotes
-          git fetch --all
-
-          # Get the list of all branches from the source repository
+          # Process branches from the source repository
           for branch in $(git branch -r | grep '^origin/' | sed 's/origin\///'); do
-            echo "Processing branch: $branch"
+            echo "Processing source branch: $branch"
 
             # Create and switch to the local branch based on the remote branch
             git checkout -B $branch origin/$branch
@@ -66,22 +65,19 @@ jobs:
             git push mirror $branch:$branch --force
           done
 
-          # Handle branches that exist only in the mirror
-          echo "Checking for branches that exist only in the mirror..."
-          for mirror_branch in $(git branch -r | grep '^mirror/' | sed 's/mirror\///'); do
-            if ! git show-ref --verify --quiet refs/heads/$mirror_branch; then
-              echo "Branch $mirror_branch exists only in the mirror. Creating and pushing empty branch."
-              git checkout --orphan $mirror_branch
+          # Ensure required branches exist in the mirror
+          for required_branch in "${REQUIRED_BRANCHES[@]}"; do
+            if ! git ls-remote --exit-code --heads mirror $required_branch &>/dev/null; then
+              echo "Branch $required_branch is missing in the mirror. Creating it."
+              git checkout --orphan $required_branch
               git rm -rf .
-              echo "This branch is a placeholder for $mirror_branch, created in the mirror only." > README.md
+              echo "This branch is a placeholder for $required_branch." > README.md
               git add README.md
-              git commit -m "Create empty branch for $mirror_branch"
-              git push mirror $mirror_branch:$mirror_branch --force
+              git commit -m "Create placeholder for $required_branch"
+              git push mirror $required_branch:$required_branch --force
+            else
+              echo "Branch $required_branch already exists in the mirror."
             fi
           done
-
-
-      - name: Final cleanup
-        run: |
-          git reset --hard
-          git clean -fd
+        env:
+          GITHUB_TOKEN: ${{ secrets.MIRROR_PAT }}
