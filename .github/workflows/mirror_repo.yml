@@ -38,8 +38,10 @@ jobs:
         run: |
           for branch in $(git branch -r | grep -v 'origin/HEAD' | sed 's/origin\///'); do
             echo "Processing branch: $branch"
-            git checkout $branch
-
+            
+            # Create and switch to the local branch
+            git checkout -B $branch origin/$branch
+            
             echo "Processing .mirrorignore (if exists)..."
             if [ -f ".mirrorignore" ]; then
               while IFS= read -r pattern || [ -n "$pattern" ]; do
@@ -54,8 +56,11 @@ jobs:
             git rm -rf --cached .github/workflows/mirror_repo.yml 2>/dev/null || true
 
             git commit -m "Mirror sync: Applied .mirrorignore filters" || true
+
+            # Push the branch to the mirror
             git push mirror $branch:$branch --force
           done
+
 
       - name: Final cleanup
         run: |
