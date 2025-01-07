@@ -1,16 +1,11 @@
-name: Mirror Repository to Organization
+name: Mirror All Branches to Organization
 
 on:
-  # Trigger on push to any branch
   push:
     branches:
       - '**'
-
-  # Trigger every hour
   schedule:
     - cron: '0 * * * *'
-
-  # Allow manual trigger
   workflow_dispatch:
 
 jobs:
@@ -22,25 +17,67 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.MIRROR_PAT }}
 
-      - name: Get branch name
-        id: branch-name
-        run: echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
-
-      - name: Mirror repository
+      - name: Configure Git
         run: |
-          # Configure Git
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          
-          # Remove any existing mirror remote if present
-          git remote remove mirror || true
-          
-          # Add organization repository as remote
-          git remote add mirror https://${{ secrets.MIRROR_PAT }}@github.com/GD-LevelReqBot/gd-levelreqbot.git
-          
-          # Push current branch to the same branch name in organization repo
-          git push mirror ${BRANCH_NAME}:${BRANCH_NAME} --force
+          git config --global user.name "${{ github.repository_owner }}"
+          git config --global user.email "${{ github.repository_owner }}@users.noreply.github.com"
 
+      - name: Clean repository
+        run: |
+          git reset --hard
+          git clean -fd
+
+      - name: Fetch all branches
+        run: |
+          git fetch --all
+
+      - name: Process branches
+        run: |
+          # Define essential branches to ensure they are mirrored
+          REQUIRED_BRANCHES=("main" "dev")
+
+          # Process branches from the source repository
+          for branch in $(git branch -r | grep '^origin/' | sed 's/origin\///'); do
+            echo "Processing source branch: $branch"
+
+            # Create and switch to the local branch based on the remote branch
+            git checkout -B $branch origin/$branch
+
+            echo "Processing .mirrorignore (if exists)..."
+            if [ -f ".mirrorignore" ]; then
+              while IFS= read -r pattern || [ -n "$pattern" ]; do
+                [[ $pattern =~ ^[[:space:]]*$ || $pattern =~ ^# ]] && continue
+                echo "Removing files matching pattern: $pattern"
+                git rm -rf --cached "$pattern" 2>/dev/null || true
+              done < ".mirrorignore"
+            fi
+
+            echo "Removing mirror workflow files..."
+            git rm -rf --cached .github/workflows/mirror.yml 2>/dev/null || true
+            git rm -rf --cached .github/workflows/mirror_repo.yml 2>/dev/null || true
+
+            git commit -m "Mirror sync: Applied .mirrorignore filters" || true
+
+            # Push the branch to the mirror
+            echo "Pushing branch $branch to the mirror"
+            git push mirror $branch:$branch --force
+          done
+
+          # Ensure required branches exist in the mirror
+          for required_branch in "${REQUIRED_BRANCHES[@]}"; do
+            if ! git ls-remote --exit-code --heads mirror $required_branch &>/dev/null; then
+              echo "Branch $required_branch is missing in the mirror. Creating it."
+              git checkout --orphan $required_branch
+              git rm -rf .
+              echo "This branch is a placeholder for $required_branch." > README.md
+              git add README.md
+              git commit -m "Create placeholder for $required_branch"
+              git push mirror $required_branch:$required_branch --force
+            else
+              echo "Branch $required_branch already exists in the mirror."
+            fi
+          done
         env:
-          MIRROR_PAT: ${{ secrets.MIRROR_PAT }}
+          GITHUB_TOKEN: ${{ secrets.MIRROR_PAT }}
