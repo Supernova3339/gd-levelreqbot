@@ -25,6 +25,10 @@ jobs:
           git config --global user.name "${{ github.repository_owner }}"
           git config --global user.email "${{ github.repository_owner }}@users.noreply.github.com"
           
+          # Clean working directory and remove untracked files
+          git reset --hard
+          git clean -fd
+          
           # Create temporary branch for clean mirror
           TEMP_BRANCH="temp-mirror-$(date +%s)"
           git checkout -b $TEMP_BRANCH
@@ -47,6 +51,7 @@ jobs:
           # Always ignore the mirror workflow itself
           echo "Removing mirror workflow..."
           git rm -rf --cached .github/workflows/mirror.yml 2>/dev/null || true
+          git rm -rf --cached .github/workflows/mirror_repo.yml 2>/dev/null || true
           
           # Commit changes if any files were removed
           git commit -m "Mirror sync: Applied .mirrorignore filters" || true
@@ -59,9 +64,13 @@ jobs:
           echo "Pushing filtered content to mirror..."
           git push mirror $TEMP_BRANCH:${GITHUB_REF#refs/heads/} --force
           
-          # Clean up
-          git checkout ${GITHUB_REF#refs/heads/}
+          # Clean up with force
+          git checkout ${GITHUB_REF#refs/heads/} --force
           git branch -D $TEMP_BRANCH
+          
+          # Final cleanup of any leftover files
+          git reset --hard
+          git clean -fd
           
         env:
           GITHUB_TOKEN: ${{ secrets.MIRROR_PAT }}
