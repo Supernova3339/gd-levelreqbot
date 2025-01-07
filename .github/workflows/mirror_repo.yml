@@ -67,17 +67,19 @@ jobs:
 
           # Ensure required branches exist in the mirror
           for required_branch in "${REQUIRED_BRANCHES[@]}"; do
-            if ! git ls-remote --exit-code --heads mirror $required_branch &>/dev/null; then
-              echo "Branch $required_branch is missing in the mirror. Creating it."
-              git checkout --orphan $required_branch
-              git rm -rf .
-              echo "This branch is a placeholder for $required_branch." > README.md
-              git add README.md
-              git commit -m "Create placeholder for $required_branch"
-              git push mirror $required_branch:$required_branch --force
-            else
-              echo "Branch $required_branch already exists in the mirror."
+            # Check if the branch already exists locally or remotely in the mirror
+            if git branch --list $required_branch || git ls-remote --exit-code --heads mirror $required_branch &>/dev/null; then
+              echo "Branch $required_branch already exists. Skipping creation."
+              continue
             fi
+
+            echo "Branch $required_branch is missing in the mirror. Creating it."
+            git checkout --orphan $required_branch
+            git rm -rf .
+            echo "This branch is a placeholder for $required_branch." > README.md
+            git add README.md
+            git commit -m "Create placeholder for $required_branch"
+            git push mirror $required_branch:$required_branch --force
           done
         env:
           GITHUB_TOKEN: ${{ secrets.MIRROR_PAT }}
