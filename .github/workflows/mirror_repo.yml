@@ -17,43 +17,31 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.MIRROR_PAT }}  # Use PAT for checkout too
           
       - name: Mirror all branches
         run: |
-          # Configure Git
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
+          # Configure Git with token-based authentication
+          git config --global user.name "${{ github.repository_owner }}"
+          git config --global user.email "${{ github.repository_owner }}@users.noreply.github.com"
           
           # Remove any existing mirror remote if present
           git remote remove mirror || true
           
-          # Add organization repository as remote
-          git remote add mirror https://${{ secrets.MIRROR_PAT }}@github.com/GD-LevelReqBot/gd-levelreqbot.git
+          # Add organization repository as remote with explicit token
+          echo "Setting up mirror remote..."
+          git remote add mirror "https://${{ github.repository_owner }}:${{ secrets.MIRROR_PAT }}@github.com/GD-LevelReqBot/gd-levelreqbot.git"
           
-          # Fetch all branches from source and mirror
-          echo "Fetching all branches from source..."
+          # Fetch all branches
+          echo "Fetching branches..."
           git fetch --all
           
-          echo "Fetching existing branches from mirror..."
-          git fetch mirror
-          
-          # List all branches before mirroring
-          echo "Current local branches:"
-          git branch -a
-          
-          echo "Current mirror branches:"
-          git ls-remote --heads mirror
-          
-          # Push all branches and tags to mirror
-          echo "Pushing all branches to mirror..."
+          # Push all branches and tags
+          echo "Pushing all branches..."
           git push mirror --all --force
           
-          echo "Pushing all tags to mirror..."
+          echo "Pushing all tags..."
           git push mirror --tags --force
           
-          # List final branches in mirror
-          echo "Final branches in mirror:"
-          git ls-remote --heads mirror
-          
         env:
-          MIRROR_PAT: ${{ secrets.MIRROR_PAT }}
+          GITHUB_TOKEN: ${{ secrets.MIRROR_PAT }}
