@@ -17,31 +17,51 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.MIRROR_PAT }}  # Use PAT for checkout too
+          token: ${{ secrets.MIRROR_PAT }}
           
-      - name: Mirror all branches
+      - name: Process mirror ignore and sync
         run: |
-          # Configure Git with token-based authentication
+          # Configure Git
           git config --global user.name "${{ github.repository_owner }}"
           git config --global user.email "${{ github.repository_owner }}@users.noreply.github.com"
           
-          # Remove any existing mirror remote if present
-          git remote remove mirror || true
+          # Create temporary branch for clean mirror
+          TEMP_BRANCH="temp-mirror-$(date +%s)"
+          git checkout -b $TEMP_BRANCH
           
-          # Add organization repository as remote with explicit token
-          echo "Setting up mirror remote..."
+          # Process .mirrorignore if it exists
+          if [ -f ".mirrorignore" ]; then
+            echo "Processing .mirrorignore file..."
+            while IFS= read -r pattern || [ -n "$pattern" ]; do
+              # Skip empty lines and comments
+              [[ $pattern =~ ^[[:space:]]*$ || $pattern =~ ^# ]] && continue
+              
+              # Remove the files that match the pattern
+              echo "Removing files matching pattern: $pattern"
+              git rm -rf --cached "$pattern" 2>/dev/null || true
+            done < ".mirrorignore"
+          else
+            echo "No .mirrorignore file found, proceeding with full mirror"
+          fi
+          
+          # Always ignore the mirror workflow itself
+          echo "Removing mirror workflow..."
+          git rm -rf --cached .github/workflows/mirror.yml 2>/dev/null || true
+          
+          # Commit changes if any files were removed
+          git commit -m "Mirror sync: Applied .mirrorignore filters" || true
+          
+          # Set up mirror remote
+          git remote remove mirror 2>/dev/null || true
           git remote add mirror "https://${{ github.repository_owner }}:${{ secrets.MIRROR_PAT }}@github.com/GD-LevelReqBot/gd-levelreqbot.git"
           
-          # Fetch all branches
-          echo "Fetching branches..."
-          git fetch --all
+          # Push to mirror repository
+          echo "Pushing filtered content to mirror..."
+          git push mirror $TEMP_BRANCH:${GITHUB_REF#refs/heads/} --force
           
-          # Push all branches and tags
-          echo "Pushing all branches..."
-          git push mirror --all --force
-          
-          echo "Pushing all tags..."
-          git push mirror --tags --force
+          # Clean up
+          git checkout ${GITHUB_REF#refs/heads/}
+          git branch -D $TEMP_BRANCH
           
         env:
           GITHUB_TOKEN: ${{ secrets.MIRROR_PAT }}
