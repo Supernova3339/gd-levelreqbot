@@ -36,12 +36,16 @@ jobs:
 
       - name: Process each branch
         run: |
-          for branch in $(git branch -r | grep -v 'origin/HEAD' | sed 's/origin\///'); do
+          # Fetch all branches from the source and mirror remotes
+          git fetch --all
+
+          # Get the list of all branches from the source repository
+          for branch in $(git branch -r | grep '^origin/' | sed 's/origin\///'); do
             echo "Processing branch: $branch"
-            
-            # Create and switch to the local branch
+
+            # Create and switch to the local branch based on the remote branch
             git checkout -B $branch origin/$branch
-            
+
             echo "Processing .mirrorignore (if exists)..."
             if [ -f ".mirrorignore" ]; then
               while IFS= read -r pattern || [ -n "$pattern" ]; do
@@ -58,7 +62,22 @@ jobs:
             git commit -m "Mirror sync: Applied .mirrorignore filters" || true
 
             # Push the branch to the mirror
+            echo "Pushing branch $branch to the mirror"
             git push mirror $branch:$branch --force
+          done
+
+          # Handle branches that exist only in the mirror
+          echo "Checking for branches that exist only in the mirror..."
+          for mirror_branch in $(git branch -r | grep '^mirror/' | sed 's/mirror\///'); do
+            if ! git show-ref --verify --quiet refs/heads/$mirror_branch; then
+              echo "Branch $mirror_branch exists only in the mirror. Creating and pushing empty branch."
+              git checkout --orphan $mirror_branch
+              git rm -rf .
+              echo "This branch is a placeholder for $mirror_branch, created in the mirror only." > README.md
+              git add README.md
+              git commit -m "Create empty branch for $mirror_branch"
+              git push mirror $mirror_branch:$mirror_branch --force
+            fi
           done
 
 
