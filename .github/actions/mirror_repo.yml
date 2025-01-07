@@ -1,0 +1,46 @@
+name: Mirror Repository to Organization
+
+on:
+  # Trigger on push to any branch
+  push:
+    branches:
+      - '**'
+
+  # Trigger every hour
+  schedule:
+    - cron: '0 * * * *'
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get branch name
+        id: branch-name
+        run: echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+
+      - name: Mirror repository
+        run: |
+          # Configure Git
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          # Remove any existing mirror remote if present
+          git remote remove mirror || true
+          
+          # Add organization repository as remote
+          git remote add mirror https://${{ secrets.MIRROR_PAT }}@github.com/GD-LevelReqBot/gd-levelreqbot.git
+          
+          # Push current branch to the same branch name in organization repo
+          git push mirror ${BRANCH_NAME}:${BRANCH_NAME} --force
+
+        env:
+          MIRROR_PAT: ${{ secrets.MIRROR_PAT }}

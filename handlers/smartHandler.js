@@ -40,7 +40,7 @@ function handleIDMessage(client) {
 function extractLevelId(message) {
     const levelId = message.match(/\d+/); // Match the first group of digits
 
-    if (levelId && levelId[0].length >= 3 && levelId[0].length <= 9) {
+    if (levelId && levelId[0].length >= 3 && levelId[0].length <= 10) {
         return parseInt(levelId[0], 10);
     }
 

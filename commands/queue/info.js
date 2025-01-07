@@ -1,10 +1,9 @@
 const {searchQueue} = require("../../utils/queue");
 const modes = require("../../modes.json");
 const logConsole = require("../../logger");
-const {getGJLevels21, getGJUsers20, getLevelLength} = require("../../utils/gd");
+const {getGJLevels21, getGJUsers20} = require("../../utils/gd");
 const axios = require('axios');
 const {channel} = require("tmi.js/lib/utils");
-const {extractLevelId} = require("../../utils/web/queue");
 
 module.exports = {
     name: '!info',
@@ -26,7 +25,6 @@ module.exports = {
             } else if (modes.gd === true) {
                 const levelData = await getGJLevels21(`${levelId}`, 1, 0); // Replace 'str', 0, 1 with actual values
                 const levelName = levelData[0].levelName; // access the levelName property of the returned object
-                const levelLength = getLevelLength(levelData[0].length); // get level length
                 const levelAuthorPlayerID = levelData[0].playerID
 
                 const userData = await getGJUsers20(levelAuthorPlayerID);
@@ -37,8 +35,25 @@ module.exports = {
 
                 // console.log(`Level data: ${JSON.stringify(levelData)}`);
 
-                client.say(channel, `${levelName} | ${userName} | ${result.levelId}, Length: ${levelLength}| Requested by: ${result.username}`);
+                client.say(channel, `${levelName} | ${userName} | ${result.levelId}, Requested by: ${result.username}`);
             }
         }
     },
 };
+
+// Extract the level ID from the command message
+/**
+ * Extracts the level ID from a given message.
+ *
+ * @param {string} message - The message containing the level ID.
+ * @return {number|null} - The extracted level ID, or null if it doesn't meet the criteria.
+ */
+function extractLevelId(message) {
+    const levelId = message.match(/\d+/); // Match the first group of digits
+
+    if (levelId && levelId[0].length >= 3 && levelId[0].length <= 9) {
+        return parseInt(levelId[0], 10);
+    }
+
+    return null;
+}

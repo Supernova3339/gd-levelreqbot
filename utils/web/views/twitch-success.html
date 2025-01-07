@@ -6,123 +6,317 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Twitch Auth Success</title>
     <style>
-        /* Apply a minimalistic black-and-white color scheme */
         body {
-            font-family: 'Arial', sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             margin: 0;
             padding: 0;
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
-            background-color: #f5f5f5; /* Light grey background */
-            color: #333; /* Dark grey text */
+            min-height: 100vh;
+            background: linear-gradient(135deg, #f6f8fd 0%, #f1f4f9 100%);
+            color: #2d3748;
+            overflow: hidden;
         }
 
-        /* Container for the success message */
         .success-container {
-            background-color: #fff; /* White background for the card */
-            border-radius: 8px;
-            padding: 2rem;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            background: white;
+            border-radius: 16px;
+            padding: 2.5rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
             text-align: center;
-            max-width: 400px;
-            width: 100%;
-            position: relative; /* Required for positioning confetti */
-            overflow: hidden; /* Hide confetti outside the container */
+            max-width: 380px;
+            width: 90%;
+            position: relative;
+            animation: fadeIn 0.6s ease-out;
+        }
+
+        .success-icon {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 1.5rem;
+            position: relative;
+        }
+
+        .success-icon circle {
+            fill: none;
+            stroke: #4ade80;
+            stroke-width: 2;
+            stroke-dasharray: 180;
+            stroke-dashoffset: 180;
+            animation: drawCircle 1s ease forwards;
+        }
+
+        .success-icon path {
+            fill: none;
+            stroke: #4ade80;
+            stroke-width: 2;
+            stroke-dasharray: 60;
+            stroke-dashoffset: 60;
+            animation: drawCheck 0.6s ease-out 0.8s forwards;
         }
 
         h1 {
-            color: #000; /* Black text for the heading */
-            font-size: 2rem;
-            margin-bottom: 1rem;
+            color: #1a202c;
+            font-size: 1.8rem;
+            font-weight: 600;
+            margin: 0 0 0.8rem;
+            opacity: 0;
+            animation: slideUp 0.6s ease 0.3s forwards;
         }
 
         p {
-            font-size: 1.2rem;
-            color: #666; /* Light grey text for the paragraph */
-            margin-bottom: 1.5rem;
+            font-size: 1.1rem;
+            color: #718096;
+            margin: 0 0 2rem;
+            line-height: 1.5;
+            opacity: 0;
+            animation: slideUp 0.6s ease 0.4s forwards;
         }
 
-        /* Minimalistic button */
         .button {
-            background-color: #000; /* Black button background */
-            color: #fff; /* White button text */
-            padding: 10px 20px;
+            background: linear-gradient(145deg, #000000, #1a1a1a);
+            color: white;
+            padding: 1rem 2rem;
             text-decoration: none;
             font-size: 1rem;
-            border-radius: 4px;
-            border: 1px solid #000; /* Black border */
+            font-weight: 500;
+            border-radius: 8px;
+            position: relative;
             display: inline-block;
-            transition: background-color 0.3s ease, color 0.3s ease;
+            opacity: 0;
+            animation: slideUp 0.6s ease 0.5s forwards;
+            transform-style: preserve-3d;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1),
+            0 2px 4px rgba(0, 0, 0, 0.1),
+            0 1px 2px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
         }
 
-        /* Button hover effect */
+        .button::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(180deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 100%);
+            opacity: 0.5;
+            transition: opacity 0.2s ease;
+        }
+
+        .button::after {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            right: -50%;
+            bottom: -50%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transform: rotate(45deg);
+            transition: 0.5s;
+            opacity: 0;
+        }
+
         .button:hover {
-            background-color: #fff; /* White button background on hover */
-            color: #000; /* Black text on hover */
+            transform: translateY(-2px) scale(1.02);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15),
+            0 3px 6px rgba(0, 0, 0, 0.1),
+            0 1px 2px rgba(0, 0, 0, 0.1);
         }
 
-        /* Responsive design */
-        @media (max-width: 500px) {
+        .button:hover::before {
+            opacity: 1;
+        }
+
+        .button:hover::after {
+            animation: shine 1.5s ease-out infinite;
+        }
+
+        .button:active {
+            transform: translateY(1px) scale(0.98);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15),
+            0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .particle {
+            position: fixed;
+            pointer-events: none;
+            z-index: 1000;
+            will-change: transform;
+        }
+
+        .shine {
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 50%;
+            height: 100%;
+            background: linear-gradient(
+                    90deg,
+                    transparent,
+                    rgba(255, 255, 255, 0.4),
+                    transparent
+            );
+            animation: shine 2s infinite;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes drawCircle {
+            to { stroke-dashoffset: 0; }
+        }
+
+        @keyframes drawCheck {
+            to { stroke-dashoffset: 0; }
+        }
+
+        @keyframes shine {
+            0% { left: -100%; }
+            20% { left: 100%; }
+            100% { left: 100%; }
+        }
+
+        @media (max-width: 480px) {
             .success-container {
-                padding: 1.5rem;
+                padding: 2rem;
             }
 
             h1 {
-                font-size: 1.8rem;
+                font-size: 1.6rem;
             }
 
             p {
                 font-size: 1rem;
             }
 
-            .button {
-                padding: 8px 16px;
-                font-size: 0.9rem;
+            .success-icon {
+                width: 56px;
+                height: 56px;
             }
         }
     </style>
 </head>
 <body>
-
 <div class="success-container">
-    <h1>Success!</h1>
-    <p>You have successfully authenticated with Twitch.</p>
-    <a class="button" href="https://github.com/supernova3339/gd-levelreqbot">Star Gd-LevelReqBot On GitHub</a>
+    <svg class="success-icon" viewBox="0 0 50 50">
+        <circle cx="25" cy="25" r="20"/>
+        <path d="M15 25 L22 32 L35 19"/>
+    </svg>
+    <div class="shine"></div>
+    <h1>Authentication Successful</h1>
+    <p>You have successfully connected your Twitch account. You're all set!</p>
+    <a class="button" href="https://github.com/supernova3339/gd-levelreqbot">Star on GitHub</a>
 </div>
 
-<!-- Canvas Confetti JS -->
-<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
 <script>
-    // Function to trigger confetti animation
-    function triggerConfetti() {
-        const duration = Infinity; // Duration of confetti in milliseconds
-        const end = Date.now() + duration;
-        const interval = 400; // Interval between confetti bursts
+    class Particle {
+        constructor(x, y, color) {
+            this.element = document.createElement('div');
+            this.element.className = 'particle';
 
-        (function frame() {
-            // Check if confetti duration has ended
-            if (Date.now() < end) {
-                confetti({
-                    particleCount: 100,
-                    angle: 60,
-                    spread: 55,
-                    origin: {x: 0},
-                });
-                confetti({
-                    particleCount: 100,
-                    angle: 120,
-                    spread: 55,
-                    origin: {x: 1},
-                });
-                setTimeout(frame, interval);
+            // Much larger, more visible emojis
+            const emojis = [
+                '🎉', '⭐', '✨', '💫', '🌟'
+            ];
+
+            this.element.textContent = emojis[Math.floor(Math.random() * emojis.length)];
+            this.element.style.fontSize = `${Math.random() * 20 + 20}px`; // Larger size range
+            this.element.style.position = 'fixed';
+            this.element.style.left = `${x}px`;
+            this.element.style.top = `${y}px`;
+            this.element.style.userSelect = 'none';
+
+            document.body.appendChild(this.element);
+
+            // Enhanced physics properties
+            this.vx = (Math.random() - 0.5) * 15; // Increased velocity
+            this.vy = (Math.random() - 0.5) * 15 - 5; // Higher initial upward velocity
+            this.rotation = Math.random() * 360;
+            this.rotationSpeed = (Math.random() - 0.5) * 15;
+
+            this.opacity = 1;
+            this.gravity = 0.15;
+            this.friction = 0.98;
+
+            this.x = x;
+            this.y = y;
+            this.lifetime = 0;
+            this.maxLifetime = 150;
+
+            this.update();
+        }
+
+        update() {
+            this.lifetime++;
+
+            if (this.lifetime >= this.maxLifetime) {
+                this.element.remove();
+                return;
             }
-        })();
+
+            this.vy += this.gravity;
+            this.vx *= this.friction;
+            this.vy *= this.friction;
+
+            this.x += this.vx;
+            this.y += this.vy;
+            this.rotation += this.rotationSpeed;
+
+            // Smoother opacity fade
+            if (this.lifetime > this.maxLifetime * 0.7) {
+                this.opacity = 1 - ((this.lifetime - (this.maxLifetime * 0.7)) / (this.maxLifetime * 0.3));
+            }
+
+            this.element.style.transform = `translate(${this.x - parseInt(this.element.style.left)}px, ${this.y - parseInt(this.element.style.top)}px) rotate(${this.rotation}deg)`;
+            this.element.style.opacity = this.opacity;
+
+            requestAnimationFrame(() => this.update());
+        }
     }
 
-    // Trigger confetti animation on page load
-    document.addEventListener('DOMContentLoaded', triggerConfetti);
+    function createParticleBurst(x, y) {
+        // Create particles in multiple waves for a more dramatic effect
+        const createWave = (delay, count) => {
+            setTimeout(() => {
+                for (let i = 0; i < count; i++) {
+                    new Particle(x, y);
+                }
+            }, delay);
+        };
+
+        // Multiple waves of particles
+        createWave(0, 15);
+        createWave(100, 10);
+        createWave(200, 5);
+    }
+
+    // Initial celebration
+    document.addEventListener('DOMContentLoaded', () => {
+        const container = document.querySelector('.success-container');
+        const rect = container.getBoundingClientRect();
+
+        // Multiple burst points around the container
+        setTimeout(() => {
+            createParticleBurst(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            createParticleBurst(rect.left + rect.width / 4, rect.top + rect.height / 2);
+            createParticleBurst(rect.left + (rect.width * 3/4), rect.top + rect.height / 2);
+        }, 1550);
+    });
+
+    // Click interaction with more particles
+    document.addEventListener('click', (e) => {
+        createParticleBurst(e.clientX, e.clientY);
+    });
 </script>
 </body>
 </html>
