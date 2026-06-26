@@ -1,0 +1,71 @@
+[package]
+name = "gdlqbot"
+version = "0.1.0"
+description = "GD Level Request Bot — desktop app"
+authors = ["Supernova3339"]
+edition = "2021"
+
+[lib]
+name = "gdlqbot_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-ico", "image-png", "devtools"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework (internal REST API + IPC bridge)
+axum = { version = "0.7", features = ["json", "ws"] }
+tower-http = { version = "0.5", features = ["cors"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "migrate"] }
+
+# Twitch IRC
+twitch-irc = { version = "5", default-features = false, features = ["transport-tcp", "transport-tcp-native-tls", "refreshing-token-native-tls"] }
+
+# HTTP client (Twitch Helix API, YouTube API)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Config
+dirs = "5"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+once_cell = "1"
+async-trait = "0.1"
+
+# Opens browser for auth service flow
+opener = "0.7"
+base64 = "0.22"
+async-recursion = "1.1.1"
+
+# Scripting engine
+rhai = { version = "1", features = ["serde", "sync"] }
+

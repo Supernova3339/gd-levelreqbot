@@ -1,0 +1,15 @@
+pub mod auth;
+pub mod licensing;
+pub mod bot;
+pub mod cmd_registry;
+pub mod config;
+pub mod dev;
+pub mod gd;
+pub mod integrations;
+pub mod keybinds;
+pub mod queue;
+pub mod script_file;
+pub mod scripting;
+pub mod templates;
+pub mod window;
+pub mod ws;

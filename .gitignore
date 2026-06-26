@@ -5,4 +5,8 @@ viewers.json
 auth-config.json*
 modes.json*
 limits.json*
+bot.config.json
 backups/*
+.claude
+external
+

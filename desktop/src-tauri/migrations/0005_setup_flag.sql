@@ -1,0 +1,2 @@
+ALTER TABLE config
+    ADD COLUMN setup_complete INTEGER NOT NULL DEFAULT 0;
