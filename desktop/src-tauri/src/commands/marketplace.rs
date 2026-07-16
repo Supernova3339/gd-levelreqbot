@@ -38,6 +38,9 @@ pub struct MarketplaceEntry {
     /// For .gdpck bundles: list of library IDs contained in the bundle.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub libraries: Vec<String>,
+    /// For .gdpck bundles: list of module IDs contained in the bundle.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<String>,
 }
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
