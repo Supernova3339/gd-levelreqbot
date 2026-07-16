@@ -1,5 +1,5 @@
 import {invoke} from "@tauri-apps/api/core";
-import type {AppConfig, BotStatusResponse, GDLevel, GDUser, Keybind, NextLevel, QueuePage,} from "./types";
+import type {AppConfig, BotStatusResponse, GDLevel, GDUser, HistoryPage, Keybind, MarketplaceEntry, ModuleManifest, NextLevel, QueuePage, VerifyResponse,} from "./types";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -21,18 +21,12 @@ export async function markSetupComplete(): Promise<void> {
 
 // ── Queue ───────────────────────────────────────────────────────────────────
 
-export async function getViewerQueue(
+export async function getQueue(
+    queueType: "viewer" | "subscriber",
     page?: number,
     perPage?: number
 ): Promise<QueuePage> {
-    return invoke<QueuePage>("get_viewer_queue", {page, perPage});
-}
-
-export async function getSubscriberQueue(
-    page?: number,
-    perPage?: number
-): Promise<QueuePage> {
-    return invoke<QueuePage>("get_subscriber_queue", {page, perPage});
+    return invoke<QueuePage>("get_queue", {queueType, page, perPage});
 }
 
 export async function addToQueue(
@@ -59,6 +53,30 @@ export async function getQueuePosition(
     levelId: number
 ): Promise<[number, string] | null> {
     return invoke<[number, string] | null>("get_queue_position", {levelId});
+}
+
+export async function promoteLevel(levelId: number): Promise<string> {
+    return invoke<string>("promote_level", {levelId});
+}
+
+export async function shuffleQueue(): Promise<string> {
+    return invoke<string>("shuffle_queue");
+}
+
+export async function openQueue(): Promise<void> {
+    return invoke<void>("open_queue");
+}
+
+export async function closeQueue(): Promise<void> {
+    return invoke<void>("close_queue");
+}
+
+export async function getQueueHistory(page?: number, perPage?: number): Promise<HistoryPage> {
+    return invoke<HistoryPage>("get_queue_history", {page, perPage});
+}
+
+export async function clearQueueHistory(): Promise<void> {
+    return invoke<void>("clear_queue_history");
 }
 
 // ── Bot ─────────────────────────────────────────────────────────────────────
@@ -204,6 +222,28 @@ export async function getGdUser(accountId: number): Promise<GDUser | null> {
     return invoke<GDUser | null>("get_gd_user", {accountId});
 }
 
+// ── GD account integration ───────────────────────────────────────────────────
+
+export interface GDAccountInfo {
+    account_id: number;
+    username: string;
+    connected: boolean;
+    icon_url: string;
+    icon_b64: string;
+}
+
+export async function gdLogin(username: string, password: string): Promise<GDAccountInfo> {
+    return invoke<GDAccountInfo>("gd_login", {username, password});
+}
+
+export async function gdLogout(): Promise<void> {
+    return invoke<void>("gd_logout");
+}
+
+export async function getGdAccount(): Promise<GDAccountInfo> {
+    return invoke<GDAccountInfo>("get_gd_account");
+}
+
 // ── Keybinds ──────────────────────────────────────────────────────────────────
 
 export async function getKeybinds(): Promise<Keybind[]> {
@@ -228,4 +268,118 @@ export async function toggleCommandEnabled(id: number, enabled: boolean): Promis
 
 export async function duplicateCommand(id: number): Promise<BotCommand> {
     return invoke<BotCommand>("duplicate_command", {id});
+}
+
+// ── Modules ──────────────────────────────────────────────────────────────────
+
+export async function listModules(): Promise<ModuleManifest[]> {
+    return invoke<ModuleManifest[]>("list_modules");
+}
+
+export async function toggleModule(id: string, enabled: boolean): Promise<void> {
+    return invoke<void>("toggle_module", {id, enabled});
+}
+
+export async function installModule(manifestJson: string): Promise<void> {
+    return invoke<void>("install_module", {manifestJson});
+}
+
+export async function uninstallModule(id: string): Promise<void> {
+    return invoke<void>("uninstall_module", {id});
+}
+
+/** Evaluate a Rhai snippet with `ms` injected; returns the JSON-encoded result.
+ *  Pass extraVars to inject additional Rhai scope variables (e.g. selection state). */
+export async function evalModulePanelData(
+    moduleId: string,
+    rhaiSnippet: string,
+    extraVars?: Record<string, unknown>,
+): Promise<unknown> {
+    const extraVarsJson = extraVars && Object.keys(extraVars).length > 0
+        ? JSON.stringify(extraVars) : undefined;
+    const json = await invoke<string>("eval_module_panel_data", {moduleId, rhaiSnippet, extraVarsJson});
+    try { return JSON.parse(json); } catch { return null; }
+}
+
+/** Execute a named action script from a module and return any chat output lines. */
+export async function executeModuleAction(
+    moduleId: string,
+    actionKey: string,
+    args?: string[],
+): Promise<string[]> {
+    return invoke<string[]>("execute_module_action", {moduleId, actionKey, args});
+}
+
+/** Open a native file picker for .json module manifests; returns file contents or null if cancelled. */
+export async function loadModuleFile(): Promise<string | null> {
+    return invoke<string | null>("load_module_file");
+}
+
+// ── Marketplace ───────────────────────────────────────────────────────────────
+
+/** Returns the full marketplace catalog (bundled official + community modules). */
+export async function fetchMarketplace(): Promise<MarketplaceEntry[]> {
+    return invoke<MarketplaceEntry[]>("fetch_marketplace");
+}
+
+/** Install a module from the marketplace by its ID. Handles download + disk extraction. */
+export async function installMarketplaceModule(id: string): Promise<void> {
+    return invoke<void>("install_marketplace_module", {id});
+}
+
+/** Install a .gdmod package from raw bytes (for file-picker installs). */
+export async function installGdmodBytes(bytes: number[]): Promise<void> {
+    return invoke<void>("install_gdmod_bytes", {bytes});
+}
+
+/** Install any package type (.gdmod, .gdlib, .gdpck) from raw bytes — type is auto-detected from manifest. */
+export async function installLocalPackage(bytes: number[]): Promise<void> {
+    return invoke<void>("install_local_package", {bytes});
+}
+
+// ── Dev tools ────────────────────────────────────────────────────────────────
+
+/** Save a PNG screenshot to {module_dir}/store/screenshots/. Returns the absolute path written. */
+export async function saveModuleScreenshot(moduleId: string, filename: string, pngBytes: number[]): Promise<string> {
+    return invoke<string>("save_module_screenshot", {moduleId, filename, pngBytes});
+}
+
+// ── Licensing ─────────────────────────────────────────────────────────────────
+
+export async function getLicenseToken(): Promise<string | null> {
+    return invoke<string | null>("get_license_token");
+}
+
+export async function setLicenseToken(token: string): Promise<void> {
+    return invoke<void>("set_license_token", {token});
+}
+
+export async function clearLicenseToken(): Promise<void> {
+    return invoke<void>("clear_license_token");
+}
+
+export async function verifyLicenseToken(token: string): Promise<VerifyResponse> {
+    return invoke<VerifyResponse>("verify_license_token", {token});
+}
+
+export async function openGithubLogin(state: string): Promise<void> {
+    return invoke<void>("open_github_login", {state});
+}
+
+// ── Libraries ─────────────────────────────────────────────────────────────────
+
+export interface LibraryInfo {
+    id: number;
+    name: string;
+    description: string;
+    is_stdlib: boolean;
+    enabled: boolean;
+}
+
+export async function getLibraries(): Promise<LibraryInfo[]> {
+    return invoke<LibraryInfo[]>("get_libraries");
+}
+
+export async function uninstallLibrary(name: string): Promise<void> {
+    return invoke<void>("uninstall_library", { name });
 }

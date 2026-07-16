@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 mod api;
 mod auth;
 mod bot;
@@ -5,12 +6,14 @@ mod commands;
 mod config;
 mod gd;
 mod integrations;
+mod modules;
 mod queue;
 mod scripting;
 mod ws;
 
 use std::sync::Arc;
 use tauri::{Emitter, Listener, Manager};
+use commands::update::{PendingUpdate, DownloadHandle};
 use tokio::sync::{watch, RwLock};
 use tracing::{error, info};
 
@@ -33,6 +36,8 @@ pub fn run() {
     let shutdown_tx_for_run = Arc::clone(&shutdown_tx);
 
     tauri::Builder::default()
+        .manage(Arc::new(PendingUpdate(tokio::sync::Mutex::new(None))))
+        .manage(Arc::new(DownloadHandle(tokio::sync::Mutex::new(None))))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // A second launch attempt was blocked — focus the existing window instead
@@ -66,11 +71,16 @@ pub fn run() {
                 let cfg = config::AppConfig::load(&pool)
                     .await.expect("failed to load config");
 
-                let queue_state = Arc::new(queue::QueueState::new(pool));
-                let bot_state   = bot::BotState::new(app_handle.clone());
-                let cfg_arc     = Arc::new(RwLock::new(cfg));
-                let cmd_cache   = CommandCache::new();
-                let dev_logger  = DevLogger::new(app_handle.clone());
+                let queue_state  = Arc::new(queue::QueueState::new(pool));
+                let modules_dir = app_handle.path().app_data_dir()
+                    .expect("no app data dir")
+                    .join("marketplace");
+                std::fs::create_dir_all(&modules_dir).ok();
+                let module_state = Arc::new(modules::ModuleState::new(Arc::clone(&queue_state.db), modules_dir.clone()));
+                let bot_state    = bot::BotState::new(app_handle.clone());
+                let cfg_arc      = Arc::new(RwLock::new(cfg));
+                let cmd_cache    = CommandCache::new();
+                let dev_logger   = DevLogger::new(app_handle.clone());
 
                 splash!("Loading commands…");
                 {
@@ -78,8 +88,6 @@ pub fn run() {
                     if let Err(e) = cmd_cache.reload(&*pool).await {
                         error!("Failed to load command cache: {e}");
                     }
-                    // Seed stdlib libraries (only inserts if not already present)
-                    seed_stdlib_libraries(&pool).await;
                 }
 
                 let api_cfg    = Arc::clone(&cfg_arc);
@@ -103,12 +111,20 @@ pub fn run() {
 
                 app_handle.manage(cfg_arc);
                 app_handle.manage(queue_state);
+                app_handle.manage(module_state);
                 app_handle.manage(bot_state);
                 app_handle.manage(cmd_cache);
                 app_handle.manage(dev_logger);
                 app_handle.manage(ws_state);
                 app_handle.manage(shutdown_tx);
             });
+
+            // Show the main window now that setup is complete.
+            // It starts hidden (tauri.conf.json: "visible": false) to avoid the blank
+            // WebView2 flash while the database and config are initializing.
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+            }
 
             info!("GD Level Request Bot started");
 
@@ -141,8 +157,19 @@ pub fn run() {
                         let payload = event.payload().to_string();
                         tauri::async_runtime::spawn(async move {
                             let _ = win.show();
-                            let _ = win.set_focus();
                             let _ = win.emit("show-level-nexted", payload);
+                        });
+                    }
+                });
+
+                // Forward GD metadata update — updates overlay content without re-showing
+                let ah_gd = app.handle().clone();
+                app.handle().listen("level-nexted-gd", move |event| {
+                    use tauri::Emitter;
+                    if let Some(win) = ah_gd.get_webview_window("level-copy") {
+                        let payload = event.payload().to_string();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = win.emit("show-level-nexted-gd", payload);
                         });
                     }
                 });
@@ -154,7 +181,6 @@ pub fn run() {
                         let payload = event.payload().to_string();
                         tauri::async_runtime::spawn(async move {
                             let _ = win.show();
-                            let _ = win.set_focus();
                             let _ = win.emit("show-level-copied", payload);
                         });
                     }
@@ -169,14 +195,21 @@ pub fn run() {
             commands::config::save_config,
             commands::config::is_setup_complete,
             commands::config::mark_setup_complete,
-            // Queue
-            commands::queue::get_viewer_queue,
-            commands::queue::get_subscriber_queue,
-            commands::queue::add_to_queue,
-            commands::queue::remove_from_queue,
-            commands::queue::clear_queue,
-            commands::queue::next_level,
-            commands::queue::get_queue_position,
+            // Modules
+            commands::modules::list_modules,
+            commands::modules::toggle_module,
+            commands::modules::install_module,
+            commands::modules::uninstall_module,
+            commands::modules::eval_module_panel_data,
+            commands::modules::execute_module_action,
+            // Marketplace
+            commands::marketplace::fetch_marketplace,
+            commands::marketplace::install_marketplace_module,
+            commands::marketplace::install_gdmod_bytes,
+            commands::marketplace::install_local_package,
+            // Module developer tools
+            commands::marketplace::install_module_from_dir,
+            commands::marketplace::start_module_dev_watch,
             // Bot
             commands::bot::start_bot,
             commands::bot::stop_bot,
@@ -223,6 +256,10 @@ pub fn run() {
             commands::scripting::set_suppress_startup_msg,
             commands::scripting::fetch_changelog,
             commands::scripting::fetch_changelog_entry,
+            // Updates
+            commands::update::check_for_update,
+            commands::update::download_and_install_update,
+            commands::update::cancel_update,
             // Window management
             commands::window::dismiss_level_overlay,
             // Dev
@@ -232,13 +269,17 @@ pub fn run() {
             commands::dev::is_dev_logging,
             commands::dev::open_devtools,
             commands::dev::restart_app,
+            commands::dev::save_module_screenshot,
             // Keybinds
             commands::keybinds::get_keybinds,
             commands::keybinds::set_keybind,
-            // GD API
+            // GD API + account integration
             commands::gd::search_gd_level,
             commands::gd::search_gd_levels,
             commands::gd::get_gd_user,
+            commands::gd::gd_login,
+            commands::gd::gd_logout,
+            commands::gd::get_gd_account,
             // Integrations
             commands::integrations::get_integrations,
             commands::integrations::create_integration,
@@ -249,6 +290,7 @@ pub fn run() {
             commands::script_file::save_script_file,
             commands::script_file::save_library_file,
             commands::script_file::load_script_file,
+            commands::script_file::load_module_file,
             commands::templates::load_user_templates,
             commands::templates::save_user_templates,
             // Scripting libraries
@@ -256,6 +298,7 @@ pub fn run() {
             scripting::commands::libraries::save_library,
             scripting::commands::libraries::delete_library,
             scripting::commands::libraries::get_library_code,
+            scripting::commands::libraries::uninstall_library,
             // WebSocket server
             commands::ws::get_ws_config,
             commands::ws::save_ws_config,
@@ -270,25 +313,3 @@ pub fn run() {
         });
 }
 
-async fn seed_stdlib_libraries(pool: &sqlx::SqlitePool) {
-    for (name, src) in scripting::stdlib::stdlib_sources() {
-        let description = match name {
-            "arr"     => "Array utilities: page, find, unique, sum, min_by, max_by, chunk, zip, sort, rotate, etc.",
-            "fmt"     => "Formatting: compact numbers, duration, ordinal, bytes, pad, truncate, title_case, etc.",
-            "queue"   => "Queue library: add, remove, next, list, position, size, format_page, summary, etc.",
-            "counter" => "Named persistent counters: inc, decr, get, set, reset, format.",
-            "str"     => "String utilities: parse_int, parse_float, is_number, words, lines, pad, truncate.",
-            "io"      => "Data I/O: format_table, kv_parse (uses io proxy for JSON, CSV, splits).",
-            _         => "",
-        };
-        let _ = sqlx::query(
-            "INSERT OR IGNORE INTO libraries (name, description, code, is_stdlib, enabled)
-             VALUES (?, ?, ?, 1, 1)"
-        )
-        .bind(name)
-        .bind(description)
-        .bind(src)
-        .execute(pool)
-        .await;
-    }
-}

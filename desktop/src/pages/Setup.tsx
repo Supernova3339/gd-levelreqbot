@@ -1,9 +1,7 @@
-import {useEffect, useState} from "react";
+import {useEffect, useRef, useState} from "react";
 import {listen} from "@tauri-apps/api/event";
-import type {AppConfig} from "../lib/types";
-import {connectBotAccount, connectTwitch, connectYouTube, markSetupComplete, saveConfig} from "../lib/commands";
-
-// connectBotAccount used in the connect step for separate bot accounts
+import type {AppConfig, MarketplaceEntry} from "../lib/types";
+import {connectBotAccount, connectTwitch, connectYouTube, fetchMarketplace, installMarketplaceModule, markSetupComplete, saveConfig} from "../lib/commands";
 
 interface SetupProps {
     onComplete: (demo?: boolean) => void;
@@ -26,12 +24,8 @@ function Field({label, id, value, onChange, type = "text", placeholder, hint, re
                 placeholder={placeholder}
                 className="w-full px-3 py-2.5 text-sm rounded-lg"
                 style={{backgroundColor: "#111", color: "#f1f1f1", border: "1px solid #333"}}
-                onFocus={(e) => {
-                    e.currentTarget.style.borderColor = "var(--color-accent)";
-                }}
-                onBlur={(e) => {
-                    e.currentTarget.style.borderColor = "#333";
-                }}
+                onFocus={(e) => { e.currentTarget.style.borderColor = "var(--color-accent)"; }}
+                onBlur={(e) => { e.currentTarget.style.borderColor = "#333"; }}
             />
             {hint && <p className="text-xs" style={{color: "#555"}}>{hint}</p>}
         </div>
@@ -72,7 +66,9 @@ function StepDots({total, current}: { total: number; current: number }) {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Provider = "twitch" | "youtube";
-type Step = "mode" | "providers" | "twitch" | "connect" | "review";
+type Step = "mode" | "providers" | "twitch" | "connect" | "packages" | "review";
+
+type InstallStatus = "pending" | "installing" | "done" | "failed";
 
 function buildDefault(): AppConfig {
     return {
@@ -82,11 +78,12 @@ function buildDefault(): AppConfig {
             twitch_access_token: "", youtube_access_token: "", youtube_api_key: "",
         },
         modes: {gd: true, sub: false, smart: false, youtube: false},
-        limits: {viewer_request_limit: 1, subscriber_request_limit: 2},
+        limits: {viewer_request_limit: 1, subscriber_request_limit: 2, max_queue_size: 0},
         setup_complete: false,
         auto_copy_level_id: false,
         level_thumbnails: true,
         thumbnail_quality: "",
+        queue_open: true,
     };
 }
 
@@ -137,20 +134,19 @@ export function Setup({onComplete}: SetupProps) {
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
 
-    // Listen for real token-saved events from the Axum server
+    // Packages step state
+    const [catalog, setCatalog] = useState<MarketplaceEntry[]>([]);
+    const [catalogLoading, setCatalogLoading] = useState(false);
+    const catalogFetched = useRef(false);
+    const [selectedPkgs, setSelectedPkgs] = useState<Set<string>>(new Set());
+    const [installProgress, setInstallProgress] = useState<Record<string, InstallStatus>>({});
+    const [installing, setInstalling] = useState(false);
+    const [installDone, setInstallDone] = useState(false);
+
     useEffect(() => {
-        const unlistenTwitch = listen("twitch-token-saved", () => {
-            setTwitchConnected(true);
-            setConnecting(null);
-        });
-        const unlistenBot = listen("twitch-bot-token-saved", () => {
-            setBotConnected(true);
-            setConnecting(null);
-        });
-        const unlistenYoutube = listen("youtube-token-saved", () => {
-            setYoutubeConnected(true);
-            setConnecting(null);
-        });
+        const unlistenTwitch  = listen("twitch-token-saved",     () => { setTwitchConnected(true);  setConnecting(null); });
+        const unlistenBot     = listen("twitch-bot-token-saved", () => { setBotConnected(true);     setConnecting(null); });
+        const unlistenYoutube = listen("youtube-token-saved",    () => { setYoutubeConnected(true); setConnecting(null); });
         return () => {
             unlistenTwitch.then((f) => f());
             unlistenBot.then((f) => f());
@@ -168,9 +164,27 @@ export function Setup({onComplete}: SetupProps) {
             return next;
         });
 
+    const enterPackagesStep = async () => {
+        if (catalogFetched.current) return;
+        catalogFetched.current = true;
+        setCatalogLoading(true);
+        try {
+            const entries = await fetchMarketplace();
+            const verified = entries.filter(e => e.verified);
+            setCatalog(verified);
+            setSelectedPkgs(new Set(verified.map(e => e.id)));
+        } catch { /* offline — no catalog */ }
+        finally { setCatalogLoading(false); }
+    };
+
+    const togglePkg = (id: string) =>
+        setSelectedPkgs(prev => {
+            const next = new Set(prev);
+            next.has(id) ? next.delete(id) : next.add(id);
+            return next;
+        });
+
     const channelValid = config.auth.channel.trim() !== "";
-    // When using a separate bot, username must be set;
-    // the bot account is connected via OAuth in the Connect step, not validated here
     const botValid = useChannelAsBot ? true : config.auth.bot_username.trim() !== "";
 
     const handleConnect = async (target: "twitch" | "bot" | "youtube") => {
@@ -182,6 +196,29 @@ export function Setup({onComplete}: SetupProps) {
         } catch {
             setConnecting(null);
         }
+    };
+
+    const handleInstallPackages = async () => {
+        const toInstall = [...selectedPkgs];
+        if (toInstall.length === 0) { setInstallDone(true); return; }
+
+        setInstalling(true);
+        const progress: Record<string, InstallStatus> = {};
+        for (const id of toInstall) progress[id] = "pending";
+        setInstallProgress({...progress});
+
+        for (const id of toInstall) {
+            setInstallProgress(p => ({ ...p, [id]: "installing" }));
+            try {
+                await installMarketplaceModule(id);
+                setInstallProgress(p => ({ ...p, [id]: "done" }));
+            } catch {
+                setInstallProgress(p => ({ ...p, [id]: "failed" }));
+            }
+        }
+
+        setInstalling(false);
+        setInstallDone(true);
     };
 
     const handleSave = async () => {
@@ -204,12 +241,14 @@ export function Setup({onComplete}: SetupProps) {
         }
     };
 
-    // Which steps to show based on provider selection
     const needsTwitch = providers.has("twitch");
-    const stepCount = 3 + (needsTwitch ? 1 : 0); // mode, providers, [twitch,] connect, review
+    // mode, providers, [twitch,] connect, packages, review
+    const stepCount = 4 + (needsTwitch ? 1 : 0);
     const stepIndex: Record<Step, number> = {
         mode: 0, providers: 1,
-        twitch: 2, connect: needsTwitch ? 3 : 2, review: needsTwitch ? 4 : 3
+        twitch: 2, connect: needsTwitch ? 3 : 2,
+        packages: needsTwitch ? 4 : 3,
+        review: needsTwitch ? 5 : 4,
     };
 
     return (
@@ -227,40 +266,29 @@ export function Setup({onComplete}: SetupProps) {
                     {step === "mode" && (
                         <>
                             <div>
-                                <h2 className="text-base font-semibold mb-1" style={{color: "#f1f1f1"}}>What do you want
-                                    to do?</h2>
+                                <h2 className="text-base font-semibold mb-1" style={{color: "#f1f1f1"}}>What do you want to do?</h2>
                             </div>
 
                             <button
                                 onClick={() => onComplete(true)}
                                 className="w-full p-4 rounded-lg text-left"
                                 style={{backgroundColor: "#111", border: "1px solid #2a2a2a"}}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.borderColor = "#444";
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.borderColor = "#2a2a2a";
-                                }}
+                                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#444"; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#2a2a2a"; }}
                             >
                                 <p className="text-sm font-medium" style={{color: "#f1f1f1"}}>Just browsing</p>
-                                <p className="text-xs mt-0.5" style={{color: "#555"}}>Load demo data and explore the
-                                    interface</p>
+                                <p className="text-xs mt-0.5" style={{color: "#555"}}>Load demo data and explore the interface</p>
                             </button>
 
                             <button
                                 onClick={() => setStep("providers")}
                                 className="w-full p-4 rounded-lg text-left"
                                 style={{backgroundColor: "#111", border: "1px solid #2a2a2a"}}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.borderColor = "var(--color-accent)";
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.borderColor = "#2a2a2a";
-                                }}
+                                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--color-accent)"; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#2a2a2a"; }}
                             >
                                 <p className="text-sm font-medium" style={{color: "#f1f1f1"}}>Set up the bot</p>
-                                <p className="text-xs mt-0.5" style={{color: "#555"}}>Connect to a platform and start
-                                    taking requests</p>
+                                <p className="text-xs mt-0.5" style={{color: "#555"}}>Connect to a platform and start taking requests</p>
                             </button>
                         </>
                     )}
@@ -269,10 +297,8 @@ export function Setup({onComplete}: SetupProps) {
                     {step === "providers" && (
                         <>
                             <div>
-                                <h2 className="text-base font-semibold mb-1" style={{color: "#f1f1f1"}}>Which
-                                    platform?</h2>
-                                <p className="text-xs" style={{color: "#555"}}>Pick the ones you stream on. You can add
-                                    more later.</p>
+                                <h2 className="text-base font-semibold mb-1" style={{color: "#f1f1f1"}}>Which platform?</h2>
+                                <p className="text-xs" style={{color: "#555"}}>Pick the ones you stream on. You can add more later.</p>
                             </div>
 
                             {(["twitch", "youtube"] as Provider[]).map((p) => {
@@ -297,8 +323,7 @@ export function Setup({onComplete}: SetupProps) {
                                         >
                                             {selected && "✓"}
                                         </div>
-                                        <span className="text-sm font-medium capitalize"
-                                              style={{color: "#f1f1f1"}}>{p}</span>
+                                        <span className="text-sm font-medium capitalize" style={{color: "#f1f1f1"}}>{p}</span>
                                     </button>
                                 );
                             })}
@@ -360,10 +385,8 @@ export function Setup({onComplete}: SetupProps) {
                                     {useChannelAsBot && "✓"}
                                 </div>
                                 <div>
-                                    <p className="text-sm font-medium" style={{color: "#f1f1f1"}}>Use my channel account
-                                        as the bot</p>
-                                    <p className="text-xs mt-0.5" style={{color: "#555"}}>The bot sends messages as you.
-                                        Uncheck to use a separate bot account.</p>
+                                    <p className="text-sm font-medium" style={{color: "#f1f1f1"}}>Use my channel account as the bot</p>
+                                    <p className="text-xs mt-0.5" style={{color: "#555"}}>The bot sends messages as you. Uncheck to use a separate bot account.</p>
                                 </div>
                             </button>
 
@@ -395,15 +418,12 @@ export function Setup({onComplete}: SetupProps) {
                     {step === "connect" && (
                         <>
                             <div>
-                                <h2 className="text-base font-semibold mb-1" style={{color: "#f1f1f1"}}>Connect
-                                    accounts</h2>
-                                <p className="text-xs" style={{color: "#555"}}>Opens a browser window. You can skip and
-                                    do this later.</p>
+                                <h2 className="text-base font-semibold mb-1" style={{color: "#f1f1f1"}}>Connect accounts</h2>
+                                <p className="text-xs" style={{color: "#555"}}>Opens a browser window. You can skip and do this later.</p>
                             </div>
 
                             {providers.has("twitch") && (
                                 <div className="flex flex-col gap-3">
-                                    {/* Channel account — always needed */}
                                     <ConnectRow
                                         label="Your channel account"
                                         hint="For announcements and subscriber detection"
@@ -411,7 +431,6 @@ export function Setup({onComplete}: SetupProps) {
                                         connecting={connecting === "twitch"}
                                         onConnect={() => handleConnect("twitch")}
                                     />
-                                    {/* Bot account — only when using a separate bot */}
                                     {!useChannelAsBot && (
                                         <ConnectRow
                                             label="Bot account"
@@ -437,11 +456,97 @@ export function Setup({onComplete}: SetupProps) {
                             <div className="flex gap-3 mt-2">
                                 <Btn variant="secondary"
                                      onClick={() => setStep(providers.has("twitch") ? "twitch" : "providers")}>Back</Btn>
-                                <Btn variant="ghost" onClick={() => setStep("review")}>Skip for now</Btn>
-                                <Btn onClick={() => setStep("review")}>Next</Btn>
+                                <Btn variant="ghost" onClick={() => enterPackagesStep()}>Skip for now</Btn>
+                                <Btn onClick={() => enterPackagesStep()}>Next</Btn>
                             </div>
 
                             <StepDots total={stepCount} current={stepIndex.connect}/>
+                        </>
+                    )}
+
+                    {/* ── Packages ── */}
+                    {step === "packages" && (
+                        <>
+                            <div>
+                                <h2 className="text-base font-semibold mb-1" style={{color: "#f1f1f1"}}>Recommended packages</h2>
+                                <p className="text-xs" style={{color: "#555"}}>Install modules and libraries. All are selected by default — uncheck anything you don't need.</p>
+                            </div>
+
+                            {catalogLoading ? (
+                                <div className="text-xs" style={{color: "#3a3a3a", padding: "12px 0"}}>Loading packages…</div>
+                            ) : catalog.length === 0 ? (
+                                <div className="text-xs" style={{color: "#3a3a3a", padding: "12px 0"}}>
+                                    Could not reach the marketplace. You can install packages later from the Modules tab.
+                                </div>
+                            ) : (
+                                <div className="flex flex-col gap-2">
+                                    {catalog.map(pkg => {
+                                        const checked    = selectedPkgs.has(pkg.id);
+                                        const status     = installProgress[pkg.id];
+                                        const showStatus = installDone || !!status;
+                                        const isLib      = (pkg.package_type ?? "module") === "library";
+                                        return (
+                                            <button
+                                                key={pkg.id}
+                                                onClick={() => { if (!installing && !installDone) togglePkg(pkg.id); }}
+                                                className="w-full p-3 rounded-lg text-left flex items-start gap-3"
+                                                style={{
+                                                    backgroundColor: "#111",
+                                                    border: `1px solid ${checked && !installDone ? "color-mix(in srgb, var(--color-accent) 40%, transparent)" : "#2a2a2a"}`,
+                                                    cursor: installing || installDone ? "default" : "pointer",
+                                                }}
+                                            >
+                                                <div
+                                                    className="w-4 h-4 rounded flex-shrink-0 flex items-center justify-center text-xs mt-0.5"
+                                                    style={{
+                                                        backgroundColor: checked && !installDone ? "var(--color-accent)" : "transparent",
+                                                        border: `2px solid ${checked && !installDone ? "var(--color-accent)" : "#444"}`,
+                                                        color: "#fff",
+                                                        flexShrink: 0,
+                                                    }}
+                                                >
+                                                    {checked && !installDone && "✓"}
+                                                </div>
+                                                <div style={{flex: 1, minWidth: 0}}>
+                                                    <div style={{display: "flex", alignItems: "center", gap: 5}}>
+                                                        <p className="text-sm font-medium" style={{color: "#f1f1f1"}}>{pkg.name}</p>
+                                                        {isLib && (
+                                                            <span style={{fontSize: 8, fontWeight: 700, color: "#555", border: "1px solid #2a2a2a", borderRadius: 3, padding: "0 3px"}}>LIB</span>
+                                                        )}
+                                                    </div>
+                                                    <p className="text-xs mt-0.5" style={{color: "#555"}}>{pkg.description}</p>
+                                                </div>
+                                                {showStatus && selectedPkgs.has(pkg.id) && (
+                                                    <span style={{
+                                                        fontSize: 10, fontWeight: 700, flexShrink: 0, alignSelf: "center",
+                                                        color: status === "done" ? "#22c55e" : status === "failed" ? "#ef4444" : status === "installing" ? "#f59e0b" : "#555",
+                                                    }}>
+                                                        {status === "done" ? "Installed" : status === "failed" ? "Failed" : status === "installing" ? "Installing…" : "Pending"}
+                                                    </span>
+                                                )}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            )}
+
+                            {!installDone ? (
+                                <div className="flex gap-3 mt-2">
+                                    <Btn variant="secondary" onClick={() => setStep("connect")} disabled={installing}>Back</Btn>
+                                    <Btn variant="ghost" onClick={() => { setInstallDone(true); setStep("review"); }} disabled={installing}>
+                                        Skip
+                                    </Btn>
+                                    <Btn onClick={handleInstallPackages} disabled={installing || selectedPkgs.size === 0 || catalogLoading}>
+                                        {installing ? "Installing…" : `Install${selectedPkgs.size > 0 ? ` (${selectedPkgs.size})` : ""}`}
+                                    </Btn>
+                                </div>
+                            ) : (
+                                <div className="flex gap-3 mt-2">
+                                    <Btn onClick={() => setStep("review")}>Continue</Btn>
+                                </div>
+                            )}
+
+                            <StepDots total={stepCount} current={stepIndex.packages}/>
                         </>
                     )}
 
@@ -457,15 +562,18 @@ export function Setup({onComplete}: SetupProps) {
                                 {providers.has("twitch") && (
                                     <>
                                         <Row label="Channel" value={`#${config.auth.channel}`}/>
-                                        <Row label="Bot"
-                                             value={useChannelAsBot ? `@${config.auth.channel}` : `@${config.auth.bot_username}`}/>
-                                        <Row label="Twitch"
-                                             value={twitchConnected ? "Connected" : "Not connected — set up in Settings"}/>
+                                        <Row label="Bot" value={useChannelAsBot ? `@${config.auth.channel}` : `@${config.auth.bot_username}`}/>
+                                        <Row label="Twitch" value={twitchConnected ? "Connected" : "Not connected — set up in Settings"}/>
                                     </>
                                 )}
                                 {providers.has("youtube") && (
-                                    <Row label="YouTube"
-                                         value={youtubeConnected ? "Connected" : "Not connected — set up in Settings"}/>
+                                    <Row label="YouTube" value={youtubeConnected ? "Connected" : "Not connected — set up in Settings"}/>
+                                )}
+                                {installDone && selectedPkgs.size > 0 && (
+                                    <Row
+                                        label="Modules"
+                                        value={`${[...selectedPkgs].filter(id => installProgress[id] === "done").length} of ${selectedPkgs.size} installed`}
+                                    />
                                 )}
                             </div>
 
@@ -480,7 +588,7 @@ export function Setup({onComplete}: SetupProps) {
                             )}
 
                             <div className="flex gap-3 mt-2">
-                                <Btn variant="secondary" onClick={() => setStep("connect")}>Back</Btn>
+                                <Btn variant="secondary" onClick={() => enterPackagesStep()}>Back</Btn>
                                 <Btn onClick={handleSave} disabled={saving}>{saving ? "Saving..." : "Start"}</Btn>
                             </div>
 
@@ -493,14 +601,13 @@ export function Setup({onComplete}: SetupProps) {
     );
 }
 
-function Row({label, value, warn}: { label: string; value: string; warn?: boolean }) {
+function Row({label, value}: { label: string; value: string }) {
     return (
         <div className="flex items-center justify-between gap-4">
             <span style={{color: "#666"}}>{label}</span>
-            <span className="font-mono text-right truncate"
-                  style={{color: warn ? "#f59e0b" : "#f1f1f1", maxWidth: 220}}>
-        {value || "—"}
-      </span>
+            <span className="font-mono text-right truncate" style={{color: "#f1f1f1", maxWidth: 220}}>
+                {value || "—"}
+            </span>
         </div>
     );
 }

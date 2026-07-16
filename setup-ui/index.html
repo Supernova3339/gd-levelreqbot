@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GD-LevelReqBot Setup</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.8.1/cdn.min.js" defer></script>
+  <script src="setup.js" defer></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <div x-data="setupWizard()" class="container mx-auto py-8 px-4">
+    <!-- Header -->
+    <header class="text-center mb-8">
+      <h1 class="text-3xl font-bold text-purple-600">GD-LevelReqBot Setup Wizard</h1>
+      <p class="text-gray-600 mt-2">Configure your level request bot with a few simple steps</p>
+    </header>
+    
+    <!-- Progress Bar -->
+    <div class="w-full max-w-3xl mx-auto mb-8">
+      <div class="flex justify-between mb-2">
+        <template x-for="(step, index) in steps" :key="index">
+          <div class="text-center flex-1">
+            <div 
+              :class="{'bg-purple-600': currentStep >= index, 'bg-gray-300': currentStep < index}"
+              class="h-2 rounded-full transition-all duration-500"
+            ></div>
+            <span 
+              :class="{'text-purple-600 font-medium': currentStep >= index, 'text-gray-500': currentStep < index}"
+              class="text-sm mt-1 inline-block"
+              x-text="step.name"
+            ></span>
+          </div>
+        </template>
+      </div>
+    </div>
+    
+    <!-- Step Content -->
+    <div class="bg-white rounded-lg shadow-lg p-6 w-full max-w-3xl mx-auto">
+      <!-- Welcome Step -->
+      <div x-show="currentStep === 0" class="space-y-6">
+        <h2 class="text-2xl font-bold text-gray-800">Welcome to GD-LevelReqBot</h2>
+        <p class="text-gray-600">This wizard will help you set up your Geometry Dash Level Request Bot for Twitch. We'll guide you through:</p>
+        
+        <ul class="list-disc pl-6 text-gray-600 space-y-2">
+          <li>Configuring Twitch authentication</li>
+          <li>Setting up queue limits for viewers and subscribers</li>
+          <li>Enabling special features like Geometry Dash mode</li>
+          <li>Customizing commands</li>
+        </ul>
+        
+        <p class="text-gray-600">Click Next to get started!</p>
+      </div>
+      
+      <!-- Twitch Auth Step -->
+      <div x-show="currentStep === 1" class="space-y-6">
+        <h2 class="text-2xl font-bold text-gray-800">Twitch Authentication</h2>
+        <p class="text-gray-600 mb-4">Connect your bot to Twitch with the following credentials:</p>
+        
+        <div class="space-y-4">
+          <div>
+            <label class="block text-gray-700 mb-1" for="botUsername">Bot Username</label>
+            <input 
+              type="text" 
+              id="botUsername" 
+              x-model="config.auth.botUsername" 
+              class="w-full rounded border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+              placeholder="Enter the Twitch username for your bot"
+            />
+          </div>
+          
+          <div>
+            <label class="block text-gray-700 mb-1" for="botToken">Bot OAuth Token</label>
+            <div class="flex">
+              <input 
+                type="password" 
+                id="botToken" 
+                x-model="config.auth.botToken" 
+                class="w-full rounded-l border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+                placeholder="oauth:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              />
+              <a 
+                href="https://twitchapps.com/tmi/" 
+                target="_blank" 
+                class="bg-gray-200 text-gray-700 px-3 py-2 rounded-r border border-gray-300 hover:bg-gray-300"
+              >
+                Get Token
+              </a>
+            </div>
+            <p class="text-xs text-gray-500 mt-1">Get a token from <a href="https://twitchapps.com/tmi/" target="_blank" class="text-purple-600 hover:underline">Twitch Chat OAuth Password Generator</a></p>
+          </div>
+          
+          <div>
+            <label class="block text-gray-700 mb-1" for="channel">Channel</label>
+            <input 
+              type="text" 
+              id="channel" 
+              x-model="config.auth.channel" 
+              class="w-full rounded border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+              placeholder="Enter the channel name without #"
+            />
+          </div>
+          
+          <button 
+            @click="testTwitchConnection" 
+            class="bg-purple-600 text-white py-2 px-4 rounded shadow hover:bg-purple-700 transition"
+            :disabled="!config.auth.botUsername || !config.auth.botToken || !config.auth.channel"
+            :class="{'opacity-50 cursor-not-allowed': !config.auth.botUsername || !config.auth.botToken || !config.auth.channel}"
+          >
+            <span x-show="!testingConnection">Test Connection</span>
+            <span x-show="testingConnection">Testing...</span>
+          </button>
+          
+          <div x-show="connectionResult" :class="connectionSuccess ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'" class="p-3 rounded">
+            <p x-text="connectionResult"></p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Twitch API Step -->
+      <div x-show="currentStep === 2" class="space-y-6">
+        <h2 class="text-2xl font-bold text-gray-800">Twitch API Setup</h2>
+        <p class="text-gray-600 mb-4">Configure Twitch API integration for enhanced features:</p>
+        
+        <div class="bg-blue-50 p-4 rounded-lg border border-blue-200 mb-4">
+          <h3 class="font-semibold text-blue-800">Creating a Twitch Application</h3>
+          <ol class="list-decimal pl-6 text-blue-800 space-y-1 mt-2">
+            <li>Go to <a href="https://dev.twitch.tv/console/apps/create" target="_blank" class="underline">Twitch Developer Console</a></li>
+            <li>Create a new application with name "GD-LevelReqBot"</li>
+            <li>Set OAuth Redirect URL to: <code class="bg-blue-100 px-1 rounded">http://localhost:24363/auth/twitch/callback</code></li>
+            <li>Set Category to "Chat Bot"</li>
+            <li>After creating, copy the Client ID and Client Secret below</li>
+          </ol>
+        </div>
+        
+        <div class="space-y-4">
+          <div>
+            <label class="block text-gray-700 mb-1" for="twitchClientId">Twitch Client ID</label>
+            <input 
+              type="text" 
+              id="twitchClientId" 
+              x-model="config.auth.TwitchClientID" 
+              class="w-full rounded border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+              placeholder="Enter your Twitch Client ID"
+            />
+          </div>
+          
+          <div>
+            <label class="block text-gray-700 mb-1" for="twitchClientSecret">Twitch Client Secret</label>
+            <input 
+              type="password" 
+              id="twitchClientSecret" 
+              x-model="config.auth.TwitchClientSecret" 
+              class="w-full rounded border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+              placeholder="Enter your Twitch Client Secret"
+            />
+          </div>
+          
+          <div>
+            <label class="block text-gray-700 mb-1" for="webhookUrl">Callback URL</label>
+            <input 
+              type="text" 
+              id="webhookUrl" 
+              x-model="config.auth.TwitchCallbackURL" 
+              class="w-full rounded border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent bg-gray-100"
+              readonly
+            />
+            <p class="text-xs text-gray-500 mt-1">Use this URL in your Twitch Developer application settings</p>
+          </div>
+          
+          <div>
+            <label class="block text-gray-700 mb-1" for="apiToken">Web API Token</label>
+            <div class="flex">
+              <input 
+                type="password" 
+                id="apiToken" 
+                x-model="config.auth.WebAPIToken" 
+                class="w-full rounded-l border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent bg-gray-100"
+                readonly
+              />
+              <button 
+                @click="generateApiToken" 
+                class="bg-gray-200 text-gray-700 px-3 py-2 rounded-r border border-gray-300 hover:bg-gray-300"
+              >
+                Generate
+              </button>
+            </div>
+            <p class="text-xs text-gray-500 mt-1">This token is used to authenticate API requests</p>
+          </div>
+          
+          <p class="text-sm text-gray-600 italic">
+            Note: After setup is complete, you'll need to authorize with Twitch to complete the connection.
+            The bot will automatically open your browser for this step.
+          </p>
+        </div>
+      </div>
+      
+      <!-- Queue Config Step -->
+      <div x-show="currentStep === 3" class="space-y-6">
+        <h2 class="text-2xl font-bold text-gray-800">Queue Configuration</h2>
+        <p class="text-gray-600 mb-4">Configure your level request queue limits:</p>
+        
+        <div class="space-y-4">
+          <div>
+            <label class="block text-gray-700 mb-1" for="viewerLimit">Viewer Request Limit</label>
+            <input 
+              type="number" 
+              id="viewerLimit" 
+              x-model.number="config.limits.viewerRequestLimit" 
+              min="1"
+              max="50"
+              class="w-full rounded border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+            />
+            <p class="text-xs text-gray-500 mt-1">Maximum number of levels a regular viewer can have in queue at once</p>
+          </div>
+          
+          <div>
+            <label class="block text-gray-700 mb-1" for="subLimit">Subscriber Request Limit</label>
+            <input 
+              type="number" 
+              id="subLimit" 
+              x-model.number="config.limits.subscriberRequestLimit" 
+              min="1"
+              max="50"
+              class="w-full rounded border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+            />
+            <p class="text-xs text-gray-500 mt-1">Maximum number of levels a subscriber can have in queue at once</p>
+          </div>
+          
+          <div class="flex items-center space-x-2">
+            <input 
+              type="checkbox" 
+              id="subMode" 
+              x-model="config.modes.sub" 
+              class="rounded text-purple-600 focus:ring-purple-600"
+            />
+            <label for="subMode" class="text-gray-700">Enable Subscriber Mode</label>
+          </div>
+          <p class="text-xs text-gray-500">When enabled, subscribers get their own separate queue with higher priority</p>
+          
+          <div class="flex items-center space-x-2">
+            <input 
+              type="checkbox" 
+              id="gdMode" 
+              x-model="config.modes.gd" 
+              class="rounded text-purple-600 focus:ring-purple-600"
+            />
+            <label for="gdMode" class="text-gray-700">Enable Geometry Dash Mode</label>
+          </div>
+          <p class="text-xs text-gray-500">When enabled, the bot will fetch level information from Geometry Dash API</p>
+          
+          <div class="flex items-center space-x-2">
+            <input 
+              type="checkbox" 
+              id="smartMode" 
+              x-model="config.modes.smart" 
+              class="rounded text-purple-600 focus:ring-purple-600"
+            />
+            <label for="smartMode" class="text-gray-700">Enable Smart Mode</label>
+          </div>
+          <p class="text-xs text-gray-500">When enabled, the bot automatically detects level IDs in chat without commands</p>
+        </div>
+      </div>
+      
+      <!-- Commands Config Step -->
+      <div x-show="currentStep === 4" class="space-y-6">
+        <h2 class="text-2xl font-bold text-gray-800">Command Customization</h2>
+        <p class="text-gray-600 mb-4">Customize your bot commands:</p>
+        
+        <div class="space-y-4">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-gray-700 mb-1" for="listCmd">List Command</label>
+              <div class="flex">
+                <span class="bg-gray-200 text-gray-700 px-3 py-2 rounded-l border border-gray-300">!</span>
+                <input 
+                  type="text" 
+                  id="listCmd" 
+                  x-model="config.commandOverrides.list" 
+                  class="w-full rounded-r border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+                />
+              </div>
+              <p class="text-xs text-gray-500 mt-1">Command to display the queue</p>
+            </div>
+            
+            <div>
+              <label class="block text-gray-700 mb-1" for="helpCmd">Help Command</label>
+              <div class="flex">
+                <span class="bg-gray-200 text-gray-700 px-3 py-2 rounded-l border border-gray-300">!</span>
+                <input 
+                  type="text" 
+                  id="helpCmd" 
+                  x-model="config.commandOverrides.commands" 
+                  class="w-full rounded-r border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+                />
+              </div>
+              <p class="text-xs text-gray-500 mt-1">Command to show available commands</p>
+            </div>
+            
+            <div>
+              <label class="block text-gray-700 mb-1" for="pingCmd">Ping Command</label>
+              <div class="flex">
+                <span class="bg-gray-200 text-gray-700 px-3 py-2 rounded-l border border-gray-300">!</span>
+                <input 
+                  type="text" 
+                  id="pingCmd" 
+                  x-model="config.commandOverrides.ping" 
+                  class="w-full rounded-r border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent"
+                />
+              </div>
+              <p class="text-xs text-gray-500 mt-1">Command to test bot responsiveness</p>
+            </div>
+          </div>
+          
+          <div class="bg-yellow-50 p-4 rounded-lg border border-yellow-200">
+            <h3 class="font-semibold text-yellow-800">Default Commands</h3>
+            <p class="text-yellow-700 text-sm">The following commands will be available:</p>
+            <ul class="list-disc pl-6 text-yellow-700 text-sm mt-2 space-y-1">
+              <li><strong>!r [levelID]</strong> - Add a level to the queue</li>
+              <li><strong>!position [levelID]</strong> - Check position in queue</li>
+              <li><strong>!info [levelID]</strong> - Get level information</li>
+              <li><strong>!remove [levelID]</strong> - Remove your level from queue</li>
+              <li><strong>!next</strong> - Go to next level (mods only)</li>
+              <li><strong>!clear</strong> - Clear the queue (mods only)</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Finish Step -->
+      <div x-show="currentStep === 5" class="space-y-6">
+        <h2 class="text-2xl font-bold text-gray-800">Setup Complete!</h2>
+        <div class="bg-green-50 p-6 rounded-lg border border-green-200 text-center">
+          <svg class="w-16 h-16 text-green-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          <h3 class="text-xl font-bold text-green-800 mb-2">Configuration Saved Successfully!</h3>
+          <p class="text-green-700 mb-4">Your GD-LevelReqBot is now configured and ready to run.</p>
+          
+          <div x-show="!finishingSetup">
+            <button 
+              @click="finishSetup" 
+              class="bg-green-600 text-white py-2 px-6 rounded-lg shadow-md hover:bg-green-700 transition-colors"
+            >
+              Start Bot
+            </button>
+          </div>
+          
+          <div x-show="finishingSetup" class="space-y-4">
+            <div class="flex items-center justify-center space-x-2">
+              <svg class="animate-spin h-5 w-5 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <span class="text-green-700">Starting GD-LevelReqBot...</span>
+            </div>
+            <p class="text-sm text-green-600">You may close this window once the bot has started.</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Navigation Buttons -->
+      <div class="flex justify-between mt-8">
+        <button 
+          x-show="currentStep > 0" 
+          @click="currentStep--" 
+          class="bg-gray-200 text-gray-700 py-2 px-4 rounded shadow hover:bg-gray-300 transition"
+        >
+          Back
+        </button>
+        <div x-show="currentStep === 0"></div>
+        
+        <button 
+          x-show="currentStep < steps.length - 1" 
+          @click="currentStep++" 
+          class="bg-purple-600 text-white py-2 px-4 rounded shadow hover:bg-purple-700 transition"
+          :disabled="!canProceed()"
+          :class="{'opacity-50 cursor-not-allowed': !canProceed()}"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+    
+    <!-- Footer -->
+    <footer class="text-center mt-8 text-gray-500 text-sm">
+      <p>GD-LevelReqBot Setup Wizard v1.0</p>
+      <p class="mt-1">Created by <a href="https://github.com/supernova3339/gd-levelreqbot" target="_blank" class="text-purple-600 hover:underline">Supernova3339</a></p>
+    </footer>
+  </div>
+</body>
+</html>
