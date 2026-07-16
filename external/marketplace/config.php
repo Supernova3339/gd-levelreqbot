@@ -75,7 +75,12 @@ function verifyLicenseToken(): ?array {
     $header = $_SERVER['HTTP_AUTHORIZATION']
         ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
         ?? (function_exists('apache_request_headers') ? (apache_request_headers()['Authorization'] ?? '') : '')
+        ?? (function_exists('getallheaders') ? (getallheaders()['Authorization'] ?? '') : '')
         ?? '';
+    // Fallback: accept token via query param (for nginx/FastCGI that strips Authorization)
+    if (empty($header) && !empty($_REQUEST['_token'])) {
+        $header = 'Bearer ' . $_REQUEST['_token'];
+    }
     if (!str_starts_with($header, 'Bearer ')) return null;
     $token = substr($header, 7);
 

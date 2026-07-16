@@ -148,7 +148,9 @@ pub async fn fetch_marketplace(
         .map_err(|e| e.to_string())?;
     let mut req = client.get(MARKETPLACE_CATALOG_URL);
     if let Some(tok) = &token {
-        req = req.header("Authorization", format!("Bearer {tok}"));
+        req = req
+            .header("Authorization", format!("Bearer {tok}"))
+            .query(&[("_token", tok.as_str())]);
     }
     let resp = req.send().await
         .map_err(|e| format!("Marketplace unavailable: {e}"))?;
@@ -188,7 +190,9 @@ pub async fn install_marketplace_module(
         .map_err(|e| e.to_string())?;
     let mut req = client.get(MARKETPLACE_CATALOG_URL);
     if let Some(tok) = &token {
-        req = req.header("Authorization", format!("Bearer {tok}"));
+        req = req
+            .header("Authorization", format!("Bearer {tok}"))
+            .query(&[("_token", tok.as_str())]);
     }
     let catalog: Vec<MarketplaceEntry> = req.send().await
         .map_err(|e| format!("Marketplace fetch failed: {e}"))?

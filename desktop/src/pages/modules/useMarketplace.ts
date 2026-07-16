@@ -61,28 +61,66 @@ function mergeWithInstalled(
         };
     });
 
-    // Surface locally-installed modules that aren't in the live catalog
+    // Surface locally-installed modules not in catalog
     for (const m of installed) {
         if (catalogIds.has(m.id)) continue;
         merged.push({
-            id:              m.id,
-            name:            m.name,
-            author:          "local",
-            package_type:    "module",
-            status:          "published",
-            version:         m.version,
-            min_app_version: m.min_app_version ?? "0.1.0",
-            description:     m.description,
-            icon:            m.icon || "custom",
-            verified:        false,
-            premium:         false,
-            downloads:       0,
-            tags:            ["local"],
-            download_url:    "",
-            checksum:        "",
-            installed:       true,
+            id:               m.id,
+            name:             m.name,
+            author:           "local",
+            package_type:     "module",
+            status:           "published",
+            version:          m.version,
+            min_app_version:  m.min_app_version ?? "0.1.0",
+            description:      m.description,
+            icon:             m.icon || "custom",
+            verified:         false,
+            premium:          false,
+            downloads:        0,
+            tags:             ["local"],
+            download_url:     "",
+            checksum:         "",
+            installed:        true,
             installedVersion: m.version,
-            updateAvailable: false,
+            updateAvailable:  false,
+        });
+    }
+
+    // Track which library names are already covered by a catalog entry
+    const coveredLibNames = new Set<string>();
+    for (const entry of catalog) {
+        if (entry.package_type === "library") {
+            const comps = entry.components ?? [];
+            if (comps.length > 0) comps.forEach(c => coveredLibNames.add(c));
+            else coveredLibNames.add(entry.id);
+        } else if (entry.package_type === "package") {
+            (entry.libraries ?? []).forEach(l => coveredLibNames.add(l));
+        }
+    }
+
+    // Surface locally-installed libraries not covered by any catalog entry
+    for (const lib of installedLibs) {
+        if (lib.is_stdlib) continue;
+        if (coveredLibNames.has(lib.name)) continue;
+        merged.push({
+            id:               lib.name,
+            name:             lib.name,
+            author:           "local",
+            package_type:     "library",
+            status:           "published",
+            version:          "local",
+            min_app_version:  "0.1.0",
+            description:      lib.description || "",
+            icon:             "book",
+            verified:         false,
+            premium:          false,
+            downloads:        0,
+            tags:             ["local"],
+            download_url:     "",
+            checksum:         "",
+            installed:        true,
+            installedVersion: "local",
+            updateAvailable:  false,
         });
     }
 
@@ -101,9 +139,13 @@ export function useMarketplace(): UseMarketplaceReturn {
         setLoading(true);
         setError(null);
         try {
-            const [catalog, installed, libs] = await Promise.all([
-                fetchMarketplace(), listModules(), getLibraries(),
-            ]);
+            const [installed, libs] = await Promise.all([listModules(), getLibraries()]);
+            let catalog: MarketplaceEntry[] = [];
+            try {
+                catalog = await fetchMarketplace();
+            } catch (e) {
+                if (mounted.current) setError(String(e));
+            }
             if (!mounted.current) return;
             setEntries(mergeWithInstalled(catalog, installed, libs));
         } catch (e) {
