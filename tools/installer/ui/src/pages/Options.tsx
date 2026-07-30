@@ -1,9 +1,7 @@
-import React, {useState} from "react";
-import {Button} from "../components/Button";
+import React from "react";
 import {Checkbox} from "../components/Checkbox";
-import {TextField} from "../components/TextField";
 import {GroupBox} from "../components/WizardFrame";
-import {type InstallOptions, openDevLogin, type SetupState, verifyDevToken} from "../lib/ipc";
+import type {InstallOptions, SetupState} from "../lib/ipc";
 
 interface OptionsProps {
     state: SetupState;
@@ -25,51 +23,8 @@ export function Options({state, opts, onChange}: OptionsProps) {
     const set = (patch: Partial<InstallOptions>) => onChange({...opts, ...patch});
     const exts = m.file_associations.map((a) => `.${a.ext}`).join("  ");
 
-    // "Developer mode" requires signing in with a marketplace account that
-    // has author role or higher (verified server-side; see devauth.rs).
-    // Paste-a-code, not a background wait: opening the browser and
-    // verifying the pasted code are both immediate actions with no hidden
-    // waiting state, since an earlier local-listener-based version of this
-    // could get stuck indefinitely if the redirect never arrived (firewall/
-    // AV interference, etc.) with no way for the user to do anything about it.
-    const [showSignIn, setShowSignIn] = useState(false);
-    const [token, setToken] = useState("");
-    const [verifying, setVerifying] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const [verifiedAs, setVerifiedAs] = useState<string | null>(null);
-
     const toggleDevMode = (checked: boolean) => {
-        if (!checked) {
-            setShowSignIn(false);
-            setToken("");
-            setError(null);
-            setVerifiedAs(null);
-            set({enable_dev: false, install_cli: false});
-            return;
-        }
-        setShowSignIn(true);
-        setError(null);
-    };
-
-    const signIn = () => {
-        setError(null);
-        openDevLogin().catch((e) => setError(String(e)));
-    };
-
-    const verify = async () => {
-        setVerifying(true);
-        setError(null);
-        try {
-            const author = await verifyDevToken(token);
-            setVerifiedAs(author.username);
-            setShowSignIn(false);
-            setToken("");
-            set({enable_dev: true, install_cli: true});
-        } catch (e) {
-            setError(String(e));
-        } finally {
-            setVerifying(false);
-        }
+        set(checked ? {enable_dev: true, install_cli: true} : {enable_dev: false});
     };
 
     return (
@@ -112,33 +67,9 @@ export function Options({state, opts, onChange}: OptionsProps) {
                             checked={opts.enable_dev}
                             onChange={toggleDevMode}
                             label="Developer mode"
-                            hint="Make your own modules, packages and commands for the marketplace. Installs the CLI and unlocks the in-app Development tab. Requires signing in with an approved author account."
+                            hint="Make your own modules, packages and commands for the marketplace. Installs the CLI and unlocks the in-app Development tab."
                         />
                     </Row>
-                    {showSignIn && !opts.enable_dev && (
-                        <div className="flex flex-col gap-2 mt-2 pl-1">
-                            <p className="m-0 text-[11px] text-text-muted">
-                                Sign in with GitHub, then paste the code it shows you below.
-                            </p>
-                            <Button onClick={signIn}>Sign in with GitHub</Button>
-                            <div className="flex gap-2">
-                                <TextField value={token} onChange={setToken} disabled={verifying}/>
-                                <Button primary onClick={verify} disabled={verifying || !token.trim()}>
-                                    {verifying ? "Verifying…" : "Verify"}
-                                </Button>
-                            </div>
-                        </div>
-                    )}
-                    {error && (
-                        <p className="m-0 mt-1 text-[11px] text-warning">
-                            {error}
-                        </p>
-                    )}
-                    {opts.enable_dev && verifiedAs && (
-                        <p className="m-0 mt-1 text-[11px] text-text-muted">
-                            Signed in as {verifiedAs}.
-                        </p>
-                    )}
                 </GroupBox>
             )}
 

@@ -5,7 +5,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::args::Args;
-use crate::devauth::DevAuthState;
 use crate::ipc::{self, SetupCtx};
 use crate::manifest::Manifest;
 
@@ -19,15 +18,12 @@ pub fn run(manifest: Manifest, args: Args, forced_dry: bool) -> Result<(), Strin
 
     tauri::Builder::default()
         .manage(ctx)
-        .manage(Arc::new(DevAuthState::new()))
         .invoke_handler(tauri::generate_handler![
             ipc::get_setup_state,
             ipc::record_quiz_passed,
             ipc::check_app_running,
             ipc::close_running_app,
             ipc::start_install,
-            ipc::open_dev_login,
-            ipc::verify_dev_token,
             ipc::start_uninstall,
             ipc::launch_app_now,
             ipc::finalize_uninstall_now,

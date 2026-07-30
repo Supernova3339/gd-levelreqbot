@@ -9,7 +9,8 @@ limits.json*
 bot.config.json
 backups/*
 .claude
-external
+external/*
+external/marketplace/config.php
 desktop/src-tauri/binaries/
 
 # Custom installer build artifacts

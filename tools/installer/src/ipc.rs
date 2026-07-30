@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, State};
 
-use crate::devauth::{self, DevAuthState};
 use crate::install::{self, InstallOptions};
 use crate::manifest::Manifest;
 use crate::quiz;
@@ -75,45 +74,15 @@ pub fn close_running_app(ctx: State<'_, SetupCtx>) -> Result<(), String> {
 pub fn start_install(
     app: AppHandle,
     ctx: State<'_, SetupCtx>,
-    dev_auth: State<'_, Arc<DevAuthState>>,
     options: InstallOptions,
 ) -> Result<(), String> {
     let mut options = options;
     if ctx.forced_dry {
         options.dry_run = true; // never trust the UI to keep this on
     }
-    // enable_dev came from the webview as plain JSON — never trust it on its
-    // own. It only takes effect if verify_dev_token actually verified an
-    // author-role account this session; a modified frontend claiming
-    // enable_dev: true without that can't grant it, since seed.rs's
-    // dev_blessing is computed from this checked value, not straight from
-    // `options`.
-    let verified = dev_auth.0.lock().unwrap().is_some();
-    if options.enable_dev && !verified {
-        options.enable_dev = false;
-    }
     spawn_worker(app, ctx, move |manifest, progress| {
         install::run_install(manifest, &options, progress)
     })
-}
-
-/// Opens the browser to start the "sign in to enable developer options"
-/// flow. Fire-and-forget — the next step is the user pasting the code the
-/// browser shows them into the "Verify" field (see verify_dev_token), so
-/// there's no waiting state on this end at all.
-#[tauri::command]
-pub fn open_dev_login() {
-    devauth::open_login_page();
-}
-
-/// Verifies a token the user pasted in from the browser. Synchronous — this
-/// is a single fast HTTPS call, not a multi-minute wait, so the frontend can
-/// just await it directly and show the result immediately.
-#[tauri::command]
-pub fn verify_dev_token(dev_auth: State<'_, Arc<DevAuthState>>, token: String) -> Result<devauth::VerifiedAuthor, String> {
-    let author = devauth::verify_token(&token)?;
-    *dev_auth.0.lock().unwrap() = Some(author.clone());
-    Ok(author)
 }
 
 #[tauri::command]

@@ -23,7 +23,7 @@ define('OWNER_GITHUB_IDS', [63515814]);
 // Optional GitHub personal access token for the marketplace's GitHub API calls
 // (resolveGithubSource). Without this, unauthenticated rate limit is 60 req/hr.
 // Set to null or '' to skip authentication.
-define('GITHUB_TOKEN', 'REDACTED_GITHUB_TOKEN');
+define('GITHUB_TOKEN', '');
 
 date_default_timezone_set('UTC');
 

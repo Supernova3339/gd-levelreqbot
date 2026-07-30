@@ -11,7 +11,6 @@ mod manifest;
 mod platform;
 mod quiz;
 mod sys;
-mod urls;
 
 use args::{Args, EXIT_ALREADY_RUNNING, EXIT_BAD_ARGS, EXIT_ERROR, HELP};
 use manifest::Manifest;

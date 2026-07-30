@@ -73,11 +73,6 @@ export interface FinishedEvent {
     error: string | null;
 }
 
-export interface VerifiedAuthor {
-    username: string;
-    role: string;
-}
-
 // ─── Commands ────────────────────────────────────────────────────────────────
 
 export const getSetupState = () => invoke<SetupState>("get_setup_state");
@@ -85,8 +80,6 @@ export const recordQuizPassed = () => invoke<void>("record_quiz_passed");
 export const checkAppRunning = () => invoke<boolean>("check_app_running");
 export const closeRunningApp = () => invoke<void>("close_running_app");
 export const startInstall = (options: InstallOptions) => invoke<void>("start_install", {options});
-export const openDevLogin = () => invoke<void>("open_dev_login");
-export const verifyDevToken = (token: string) => invoke<VerifiedAuthor>("verify_dev_token", {token});
 export const startUninstall = (purge: boolean, dryRun: boolean, reason?: string) =>
     invoke<void>("start_uninstall", {purge, dryRun, reason: reason ?? null});
 export const launchAppNow = (dir: string) => invoke<void>("launch_app_now", {dir});
