@@ -1,103 +1,37 @@
-// Scrollable row of library chips — each opens a grouped variable picker.
+// Scrollable row of proxy chips — each opens the same catalog used by the "."
+// autocomplete (lib/scripting/proxy-api.ts), filtered to what's actually in
+// scope for the current script. A trailing "libraries" chip lists installed
+// Rhai libraries (stdlib globals + importable module-bundled ones) since
+// those aren't proxies and wouldn't otherwise show up anywhere in the editor.
 
 import {useCallback, useEffect, useRef, useState} from "react";
 import {createPortal} from "react-dom";
 import {computePosition, flip, offset, shift} from "@floating-ui/dom";
-
-interface VarEntry {
-    v: string;
-    hint: string;
-}
-
-interface LibChip {
-    label: string;
-    color: string;
-    entries: VarEntry[];
-}
-
-const CHIPS: LibChip[] = [
-    {
-        label: "user", color: "#c3e88d",
-        entries: [{v: "user.name", hint: "login name"}, {v: "user.platform", hint: '"twitch" | "youtube"'},
-            {v: "user.isMod()", hint: "bool"}, {v: "user.isSub()", hint: "bool"},
-            {v: "user.isBroadcaster()", hint: "bool"}, {v: "user.isStaff()", hint: "mod or broadcaster"}]
-    },
-    {
-        label: "args", color: "#82aaff",
-        entries: [{v: "args[0]", hint: "first argument"}, {v: "args.len()", hint: "argument count"},
-            {v: 'args.join(" ")', hint: "all args as string"}]
-    },
-    {
-        label: "queue", color: "#22c55e",
-        entries: [{v: "queue.size()", hint: "entry count"}, {v: "queue.has(args[0])", hint: "bool"},
-            {v: "queue.add(args[0])", hint: "add level"}, {v: "queue.position(args[0])", hint: "i64, 0=not found"},
-            {v: "queue.next()", hint: "pop next level"}, {v: "queue.list(1)", hint: "page 1 array"}]
-    },
-    {
-        label: "time", color: "#f59e0b",
-        entries: [{v: "time.now()", hint: "Unix timestamp"}, {v: "time.utc()", hint: '"14:23 UTC"'},
-            {v: "time.date()", hint: '"2026-06-25"'}, {v: "time.elapsed(ts)", hint: "seconds since ts"}]
-    },
-    {
-        label: "platform", color: "#89ddff",
-        entries: [{v: "platform", hint: '"twitch" | "youtube"'}, {v: "command_trigger", hint: 'e.g. "!request"'},
-            {v: "username", hint: "sender login name"}]
-    },
-    {
-        label: "rand", color: "#f78c6c",
-        entries: [{v: "rand.int(1, 100)", hint: "random int"}, {v: 'rand.pick(["a","b"])', hint: "random element"},
-            {v: "rand.float()", hint: "0.0-1.0"}, {v: "rand.bool()", hint: "true/false"}]
-    },
-    {
-        label: "store", color: "#6366f1",
-        entries: [{v: 'store.get("key")', hint: "get value"}, {v: 'store.incr("key")', hint: "increment, return new"},
-            {v: 'store.set("key", val)', hint: "set value"}, {v: 'store.get_or("key", 0)', hint: "with default"}]
-    },
-    {
-        label: "gd", color: "#a78bfa",
-        entries: [{v: "gd.fetch(args[0])", hint: "level map or ()"}, {v: "gd.isValidId(args[0])", hint: "bool"},
-            {v: 'gd.search("name")', hint: "array of level maps"}]
-    },
-    {
-        label: "web", color: "#22d3ee",
-        entries: [{v: 'web.get("url")', hint: "body string or ()"}, {
-            v: 'web.get_json("url")',
-            hint: "parsed JSON or ()"
-        },
-            {v: 'web.post("url", body)', hint: "POST plain text"}, {v: 'web.post_json("url", body)', hint: "POST JSON"}]
-    },
-    {
-        label: "data", color: "#fb7185",
-        entries: [{v: 'data.insert("col", #{})', hint: "insert doc, returns UUID"},
-            {v: 'data.find("col", 10)', hint: "array of docs"}, {v: 'data.count("col")', hint: "document count"},
-            {v: 'data.delete(id)', hint: "delete by UUID"}]
-    },
-    {
-        label: "console", color: "#a3a3a3",
-        entries: [{v: 'console.log("msg")', hint: "log to script console"},
-            {v: 'console.warn("msg")', hint: "log a warning"},
-            {v: 'console.error("msg")', hint: "log an error"}]
-    },
-    {
-        label: "event", color: "#34d399",
-        entries: [{v: 'event.emit("name", "payload")', hint: "emit to frontend + WS"},
-            {v: 'event.emit("name")', hint: "emit with no payload"}]
-    },
-];
+import {availableProxyNames, PROXY_API, PROXY_META, type ScriptContext} from "../../../lib/scripting/proxy-api";
+import {getLibraries, type LibraryInfo} from "../../../lib/commands";
 
 interface Props {
     onInsert: (text: string) => void;
+    scriptCtx: ScriptContext;
 }
 
-export function VarChipDropdown({onInsert}: Props) {
-    const [openIdx, setOpenIdx] = useState<number | null>(null);
+const LIB_CHIP_COLOR = "#facc15";
+
+export function VarChipDropdown({onInsert, scriptCtx}: Props) {
+    const chipNames = availableProxyNames(scriptCtx);
+    const [openIdx, setOpenIdx] = useState<number | null>(null); // index into chipNames, or -1 for libraries
     const [pos, setPos] = useState({top: -9999, left: -9999});
-    const btnRefs = useRef<(HTMLButtonElement | null)[]>([]);
+    const btnRefs = useRef<Record<string | number, HTMLButtonElement | null>>({});
     const menuRef = useRef<HTMLDivElement | null>(null);
     const cancelPos = useRef(false);
 
-    const reposition = useCallback((idx: number) => {
-        const btn = btnRefs.current[idx];
+    const [libraries, setLibraries] = useState<LibraryInfo[] | null>(null);
+    useEffect(() => {
+        getLibraries().then(setLibraries).catch(() => setLibraries([]));
+    }, []);
+
+    const reposition = useCallback((key: string | number) => {
+        const btn = btnRefs.current[key];
         if (!btn || !menuRef.current) return;
         cancelPos.current = false;
         computePosition(btn, menuRef.current, {
@@ -108,10 +42,12 @@ export function VarChipDropdown({onInsert}: Props) {
         });
     }, []);
 
+    const openKey: string | number | null = openIdx === null ? null : (openIdx === -1 ? "libraries" : chipNames[openIdx]);
+
     const setMenuRef = useCallback((node: HTMLDivElement | null) => {
         menuRef.current = node;
-        if (node && openIdx !== null) reposition(openIdx);
-    }, [openIdx, reposition]);
+        if (node && openKey !== null) reposition(openKey);
+    }, [openKey, reposition]);
 
     useEffect(() => {
         if (openIdx === null) {
@@ -119,8 +55,9 @@ export function VarChipDropdown({onInsert}: Props) {
             return;
         }
         const close = (e: MouseEvent) => {
+            const key = openKey!;
             if (!menuRef.current?.contains(e.target as Node) &&
-                !btnRefs.current[openIdx]?.contains(e.target as Node))
+                !btnRefs.current[key]?.contains(e.target as Node))
                 setOpenIdx(null);
         };
         const esc = (e: KeyboardEvent) => {
@@ -133,37 +70,43 @@ export function VarChipDropdown({onInsert}: Props) {
             document.removeEventListener("mousedown", close);
             document.removeEventListener("keydown", esc);
         };
-    }, [openIdx]);
+    }, [openIdx, openKey]);
+
+    const chipBtnStyle = (active: boolean, color: string): React.CSSProperties => ({
+        flexShrink: 0,
+        fontSize: 10,
+        padding: "2px 7px",
+        borderRadius: 4,
+        cursor: "pointer",
+        fontFamily: '"JetBrains Mono","Fira Code",monospace',
+        border: `1px solid ${active ? color + "50" : "#1e1e1e"}`,
+        backgroundColor: active ? color + "18" : "transparent",
+        color: active ? color : "#3a3a3a",
+    });
 
     return (
         <>
-            <div
-                style={{display: "flex", alignItems: "center", gap: 3, overflow: "hidden", flexShrink: 1, minWidth: 0}}>
-                {CHIPS.map((chip, i) => {
+            <div style={{
+                display: "flex", alignItems: "center", gap: 3, flexShrink: 1, minWidth: 0,
+                overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none",
+            }}>
+                {chipNames.map((name, i) => {
+                    const meta = PROXY_META[name];
                     const active = openIdx === i;
                     return (
                         <button
-                            key={chip.label}
+                            key={name}
                             ref={(el) => {
-                                btnRefs.current[i] = el;
+                                btnRefs.current[name] = el;
                             }}
                             onClick={() => setOpenIdx(active ? null : i)}
-                            style={{
-                                flexShrink: 0,
-                                fontSize: 10,
-                                padding: "2px 7px",
-                                borderRadius: 4,
-                                cursor: "pointer",
-                                fontFamily: '"JetBrains Mono","Fira Code",monospace',
-                                border: `1px solid ${active ? chip.color + "50" : "#1e1e1e"}`,
-                                backgroundColor: active ? chip.color + "18" : "transparent",
-                                color: active ? chip.color : "#3a3a3a",
-                            }}
+                            title={meta.summary}
+                            style={chipBtnStyle(active, meta.color)}
                             onMouseEnter={(e) => {
                                 if (active) return;
-                                e.currentTarget.style.color = chip.color;
-                                e.currentTarget.style.borderColor = chip.color + "33";
-                                e.currentTarget.style.backgroundColor = chip.color + "0e";
+                                e.currentTarget.style.color = meta.color;
+                                e.currentTarget.style.borderColor = meta.color + "33";
+                                e.currentTarget.style.backgroundColor = meta.color + "0e";
                             }}
                             onMouseLeave={(e) => {
                                 if (active) return;
@@ -171,31 +114,66 @@ export function VarChipDropdown({onInsert}: Props) {
                                 e.currentTarget.style.borderColor = "#1e1e1e";
                                 e.currentTarget.style.backgroundColor = "transparent";
                             }}>
-                            {chip.label}
+                            {name}
                         </button>
                     );
                 })}
+
+                {/* Libraries — not a proxy, so it gets its own chip */}
+                <button
+                    ref={(el) => {
+                        btnRefs.current["libraries"] = el;
+                    }}
+                    onClick={() => setOpenIdx(openIdx === -1 ? null : -1)}
+                    title="Installed libraries — stdlib globals and importable module libraries"
+                    style={chipBtnStyle(openIdx === -1, LIB_CHIP_COLOR)}
+                    onMouseEnter={(e) => {
+                        if (openIdx === -1) return;
+                        e.currentTarget.style.color = LIB_CHIP_COLOR;
+                        e.currentTarget.style.borderColor = LIB_CHIP_COLOR + "33";
+                        e.currentTarget.style.backgroundColor = LIB_CHIP_COLOR + "0e";
+                    }}
+                    onMouseLeave={(e) => {
+                        if (openIdx === -1) return;
+                        e.currentTarget.style.color = "#3a3a3a";
+                        e.currentTarget.style.borderColor = "#1e1e1e";
+                        e.currentTarget.style.backgroundColor = "transparent";
+                    }}>
+                    libraries
+                </button>
             </div>
 
-            {openIdx !== null && createPortal(
+            {openIdx !== null && openIdx >= 0 && createPortal(
                 <div ref={setMenuRef} style={{
                     position: "fixed", top: pos.top, left: pos.left, zIndex: 9999,
                     backgroundColor: "#111", border: "1px solid #1e1e1e", borderRadius: 6,
-                    boxShadow: "0 8px 28px rgba(0,0,0,0.8)", minWidth: 240, maxHeight: 300,
+                    boxShadow: "0 8px 28px rgba(0,0,0,0.8)", minWidth: 260, maxHeight: 320,
                     overflow: "hidden auto",
                 }}>
-                    <p style={{
-                        padding: "5px 10px 4px", fontSize: 10, fontWeight: 600,
-                        color: CHIPS[openIdx].color, letterSpacing: "0.06em", textTransform: "uppercase",
+                    <div style={{
+                        padding: "6px 10px 5px",
                         borderBottom: "1px solid #1a1a1a", position: "sticky", top: 0,
                         backgroundColor: "#111",
                     }}>
-                        {CHIPS[openIdx].label}
-                    </p>
-                    {CHIPS[openIdx].entries.map(({v, hint}) => (
-                        <button key={v}
+                        <p style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            color: PROXY_META[chipNames[openIdx]].color,
+                            letterSpacing: "0.06em",
+                            textTransform: "uppercase",
+                        }}>
+                            {chipNames[openIdx]}
+                        </p>
+                        <p style={{
+                            fontSize: 10,
+                            color: "#444",
+                            marginTop: 2
+                        }}>{PROXY_META[chipNames[openIdx]].summary}</p>
+                    </div>
+                    {PROXY_API[chipNames[openIdx]].map(({label, insert, docs}) => (
+                        <button key={label}
                                 onClick={() => {
-                                    onInsert(v);
+                                    onInsert(`${chipNames[openIdx]}.${insert}`);
                                     setOpenIdx(null);
                                 }}
                                 className="w-full flex items-center justify-between px-3 py-1.5 text-xs gap-6"
@@ -208,9 +186,85 @@ export function VarChipDropdown({onInsert}: Props) {
                                 }}>
                             <code style={{
                                 color: "#ffcb6b",
-                                fontFamily: '"JetBrains Mono","Fira Code",monospace'
-                            }}>{v}</code>
-                            <span style={{color: "#444", flexShrink: 0}}>{hint}</span>
+                                fontFamily: '"JetBrains Mono","Fira Code",monospace',
+                                flexShrink: 0
+                            }}>
+                                {chipNames[openIdx]}.{label}
+                            </code>
+                            <span style={{color: "#444", flexShrink: 0, textAlign: "right"}}>{docs}</span>
+                        </button>
+                    ))}
+                </div>,
+                document.body
+            )}
+
+            {openIdx === -1 && createPortal(
+                <div ref={setMenuRef} style={{
+                    position: "fixed", top: pos.top, left: pos.left, zIndex: 9999,
+                    backgroundColor: "#111", border: "1px solid #1e1e1e", borderRadius: 6,
+                    boxShadow: "0 8px 28px rgba(0,0,0,0.8)", minWidth: 280, maxHeight: 320,
+                    overflow: "hidden auto",
+                }}>
+                    <p style={{
+                        padding: "5px 10px 4px", fontSize: 10, fontWeight: 600,
+                        color: LIB_CHIP_COLOR, letterSpacing: "0.06em", textTransform: "uppercase",
+                        borderBottom: "1px solid #1a1a1a", position: "sticky", top: 0,
+                        backgroundColor: "#111",
+                    }}>
+                        Libraries
+                    </p>
+                    {libraries === null && (
+                        <p style={{padding: "10px", fontSize: 11, color: "#333"}}>Loading…</p>
+                    )}
+                    {libraries?.length === 0 && (
+                        <p style={{padding: "10px", fontSize: 11, color: "#333"}}>No libraries installed.</p>
+                    )}
+                    {libraries?.filter((l) => l.enabled).map((lib) => (
+                        <button key={lib.name}
+                                onClick={() => {
+                                    if (!lib.is_stdlib) onInsert(`import "${lib.name}" as ${safeAlias(lib.name)};`);
+                                    setOpenIdx(null);
+                                }}
+                                disabled={lib.is_stdlib}
+                                title={lib.is_stdlib
+                                    ? "Stdlib — its functions are already global, no import needed"
+                                    : `Insert: import "${lib.name}" as ${safeAlias(lib.name)};`}
+                                className="w-full flex items-start justify-between px-3 py-1.5 text-xs gap-3"
+                                style={{
+                                    cursor: lib.is_stdlib ? "default" : "pointer",
+                                    color: "#d0d0d0",
+                                    textAlign: "left"
+                                }}
+                                onMouseEnter={(e) => {
+                                    if (!lib.is_stdlib) e.currentTarget.style.backgroundColor = "#1a1a1a";
+                                }}
+                                onMouseLeave={(e) => {
+                                    e.currentTarget.style.backgroundColor = "transparent";
+                                }}>
+                            <span style={{minWidth: 0}}>
+                                <code style={{
+                                    color: "#ffcb6b",
+                                    fontFamily: '"JetBrains Mono","Fira Code",monospace',
+                                    display: "block"
+                                }}>
+                                    {lib.name}
+                                </code>
+                                {lib.description && (
+                                    <span style={{
+                                        color: "#444",
+                                        fontSize: 10,
+                                        display: "block",
+                                        marginTop: 1
+                                    }}>{lib.description}</span>
+                                )}
+                            </span>
+                            <span style={{
+                                flexShrink: 0, fontSize: 9, padding: "1px 5px", borderRadius: 3,
+                                color: lib.is_stdlib ? "#888" : "#4ade80",
+                                border: `1px solid ${lib.is_stdlib ? "#333" : "#1a4a2a"}`,
+                            }}>
+                                {lib.is_stdlib ? "global" : "import"}
+                            </span>
                         </button>
                     ))}
                 </div>,
@@ -218,4 +272,9 @@ export function VarChipDropdown({onInsert}: Props) {
             )}
         </>
     );
+}
+
+function safeAlias(name: string): string {
+    const base = name.replace(/[^a-zA-Z0-9_]/g, "_");
+    return /^[0-9]/.test(base) ? `_${base}` : (base || "lib");
 }

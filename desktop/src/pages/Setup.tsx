@@ -1,7 +1,15 @@
 import {useEffect, useRef, useState} from "react";
 import {listen} from "@tauri-apps/api/event";
 import type {AppConfig, MarketplaceEntry} from "../lib/types";
-import {connectBotAccount, connectTwitch, connectYouTube, fetchMarketplace, installMarketplaceModule, markSetupComplete, saveConfig} from "../lib/commands";
+import {
+    connectBotAccount,
+    connectTwitch,
+    connectYouTube,
+    fetchMarketplace,
+    installMarketplaceModule,
+    markSetupComplete,
+    saveConfig
+} from "../lib/commands";
 
 interface SetupProps {
     onComplete: (demo?: boolean) => void;
@@ -165,6 +173,7 @@ export function Setup({onComplete}: SetupProps) {
         });
 
     const enterPackagesStep = async () => {
+        setStep("packages");
         if (catalogFetched.current) return;
         catalogFetched.current = true;
         setCatalogLoading(true);

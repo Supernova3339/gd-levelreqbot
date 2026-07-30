@@ -46,14 +46,6 @@
             border-radius: 50%;
             flex-shrink: 0;
             margin-top: 2px;
-        }
-
-        .dot.nexted {
-            background: #818cf8;
-            box-shadow: 0 0 6px #818cf888;
-        }
-
-        .dot.copied {
             background: #4ade80;
             box-shadow: 0 0 6px #4ade8088;
         }
@@ -69,28 +61,7 @@
             text-transform: uppercase;
             letter-spacing: 0.1em;
             margin-bottom: 2px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .label.nexted {
-            color: #6366f1;
-        }
-
-        .label.copied {
             color: #22c55e;
-        }
-
-        .clipboard-badge {
-            font-size: 9px;
-            font-weight: 600;
-            background: #0a2a1a;
-            color: #4ade80;
-            border: 1px solid #1a4a2a;
-            border-radius: 3px;
-            padding: 1px 5px;
-            letter-spacing: 0.05em;
         }
 
         .level-id {
@@ -100,15 +71,6 @@
             color: #f1f1f1;
             letter-spacing: -0.02em;
             line-height: 1.1;
-        }
-
-        .gd-name {
-            font-size: 11px;
-            color: #888;
-            margin-top: 1px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
         }
 
         .sub {
@@ -146,13 +108,6 @@
         .bar-fill {
             height: 100%;
             transition: width 0.08s linear;
-        }
-
-        .bar-fill.nexted {
-            background: linear-gradient(90deg, #6366f1, #818cf8);
-        }
-
-        .bar-fill.copied {
             background: linear-gradient(90deg, #16a34a, #4ade80);
         }
     </style>
@@ -160,20 +115,16 @@
 <body>
 <div class="card">
     <div class="body">
-        <div class="dot nexted" id="dot"></div>
+        <div class="dot"></div>
         <div class="info">
-            <div class="label nexted" id="label">
-                <span id="label-text">Now Playing</span>
-                <span class="clipboard-badge" id="clip-badge" style="display:none">📋 Copied</span>
-            </div>
+            <div class="label">Copied to Clipboard</div>
             <div class="level-id" id="level-id">—</div>
-            <div class="gd-name" id="gd-name" style="display:none"></div>
-            <div class="sub" id="sub"></div>
+            <div class="sub">ready to paste in Geometry Dash</div>
         </div>
         <button class="close" onclick="dismiss()">×</button>
     </div>
     <div class="bar">
-        <div class="bar-fill nexted" id="bar" style="width:100%"></div>
+        <div class="bar-fill" id="bar" style="width:100%"></div>
     </div>
 </div>
 
@@ -206,15 +157,6 @@
         timer = setTimeout(dismiss, DURATION);
     }
 
-    function setKind(kind) {
-        ['dot', 'label', 'bar-fill'].forEach(id => {
-            const el = document.getElementById(id === 'bar-fill' ? 'bar' : id);
-            if (el) el.className = el.className.replace(/\bnexted\b|\bcopied\b/g, '').trim() + ' ' + kind;
-        });
-        document.getElementById('label-text').textContent =
-            kind === 'nexted' ? 'Now Playing' : 'Copied to Clipboard';
-    }
-
     async function positionWindow() {
         try {
             const pos = localStorage.getItem('gdlqbot.overlay_position') || 'bottom-right';
@@ -245,36 +187,9 @@
         }
     }
 
-    function showNexted(payload) {
-        try {
-            const d = typeof payload === 'string' ? JSON.parse(payload) : payload;
-            setKind('nexted');
-            document.getElementById('level-id').textContent = String(d.level_id ?? '—');
-            document.getElementById('sub').textContent = d.username ? `requested by @${d.username}` : '';
-            // GD name
-            const gdName = d.gd_name;
-            const nameEl = document.getElementById('gd-name');
-            if (gdName) {
-                nameEl.textContent = gdName + (d.gd_stars ? ` · ${d.gd_stars}★` : '');
-                nameEl.style.display = '';
-            } else {
-                nameEl.style.display = 'none';
-            }
-            // Clipboard badge
-            const badge = document.getElementById('clip-badge');
-            badge.style.display = d.auto_copied ? '' : 'none';
-        } catch {
-        }
-        startCountdown();
-    }
-
     function showCopied(payload) {
         const id = typeof payload === 'string' && payload.startsWith('"') ? JSON.parse(payload) : payload;
-        setKind('copied');
         document.getElementById('level-id').textContent = String(id ?? '—');
-        document.getElementById('sub').textContent = 'ready to paste in Geometry Dash';
-        document.getElementById('gd-name').style.display = 'none';
-        document.getElementById('clip-badge').style.display = 'none';
         startCountdown();
     }
 
@@ -290,24 +205,12 @@
         } catch {
         }
 
-        window.__TAURI__.event.listen('show-level-nexted', async e => {
-            await positionWindow();
-            showNexted(e.payload);
-            try {
-                const win = window.__TAURI__.window.getCurrentWindow();
-                await win.show();
-                await win.setFocus();
-            } catch {
-            }
-        });
-
         window.__TAURI__.event.listen('show-level-copied', async e => {
             await positionWindow();
             showCopied(e.payload);
             try {
                 const win = window.__TAURI__.window.getCurrentWindow();
                 await win.show();
-                await win.setFocus();
             } catch {
             }
         });

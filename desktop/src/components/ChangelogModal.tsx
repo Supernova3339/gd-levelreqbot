@@ -63,6 +63,7 @@ function AlertBlockComponent({token, children}: ReactComponentTokenProps) {
 }
 
 // Supports both :::type\ncontent\n::: and > [!TYPE]\n> content
+// Note: patterns use \r?\n to handle both LF and CRLF line endings.
 const AlertExtension: ReactComponentExtension = {
     name: "alert-blocks",
     parseRules: [
@@ -71,7 +72,7 @@ const AlertExtension: ReactComponentExtension = {
             scope: "block",
             priority: 10,
             recursiveContent: true,
-            pattern: /^:::(\w+)\n([\s\S]*?)\n:::/m,
+            pattern: /^:::(\w+)\r?\n([\s\S]*?)\r?\n:::/m,
             render: (m) => ({
                 type: "alert",
                 content: (m[2] ?? "").trim(),
@@ -85,10 +86,10 @@ const AlertExtension: ReactComponentExtension = {
             priority: 9,
             recursiveContent: true,
             // > [!TYPE]\n> line1\n> line2 ...
-            pattern: /^>\s*\[!(NOTE|TIP|INFO|IMPORTANT|WARNING|CAUTION|DANGER)\]\n((?:>.*(?:\n|$))*)/im,
+            pattern: /^>\s*\[!(NOTE|TIP|INFO|IMPORTANT|WARNING|CAUTION|DANGER)\]\r?\n((?:>[^\r\n]*(?:\r?\n|$))*)/im,
             render: (m) => {
                 const lines = (m[2] ?? "")
-                    .split("\n")
+                    .split(/\r?\n/)
                     .map((l: string) => l.replace(/^>\s?/, ""))
                     .join("\n")
                     .trim();
@@ -108,11 +109,50 @@ const AlertExtension: ReactComponentExtension = {
             render: (token) => {
                 const kind = ((token.attributes?.kind as string) ?? "note").toLowerCase();
                 const meta = ALERT_META[kind] ?? ALERT_META.note;
-                return `<div style="border-left:3px solid ${meta.color};background:${meta.bg};padding:10px 14px;border-radius:6px;margin:0.75em 0">
-          <p style="color:${meta.color};font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:4px">${meta.icon} ${meta.label}</p>
-          <div style="color:#c0c0c0">${token.content}</div>
-        </div>`;
+                return `<div style="border-left:3px solid ${meta.color};background:${meta.bg};padding:10px 14px;border-radius:6px;margin:0.75em 0"><p style="color:${meta.color};font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin:0 0 4px">${meta.icon} ${meta.label}</p><div style="color:#c0c0c0;font-size:13px;line-height:1.6">${token.content}</div></div>`;
             },
+        },
+    ],
+};
+
+// ─── Subtext extension (-# text — Discord-style muted secondary text) ────────
+
+function SubtextComponent({token}: ReactComponentTokenProps) {
+    return (
+        <p style={{
+            fontSize: 11,
+            color: "#444",
+            margin: "2px 0 6px",
+            lineHeight: 1.5,
+            fontStyle: "italic",
+        }}>
+            {token.content}
+        </p>
+    );
+}
+
+const SubtextExtension: ReactComponentExtension = {
+    name: "subtext",
+    parseRules: [
+        {
+            name: "subtext-line",
+            scope: "block",
+            priority: 8,
+            pattern: /^-#[ \t]+([^\r\n]+)/m,
+            render: (m) => ({
+                type: "subtext",
+                content: (m[1] ?? "").trim(),
+                raw: m[0] ?? "",
+                attributes: {variant: "inline"},
+            }),
+        },
+    ],
+    renderRules: [
+        {
+            type: "subtext",
+            component: SubtextComponent,
+            render: (token) =>
+                `<p style="font-size:11px;color:#444;margin:2px 0 6px;line-height:1.5;font-style:italic">${token.content}</p>`,
         },
     ],
 };
@@ -543,7 +583,7 @@ function ChangelogMarkdown({content}: { content: string }) {
                 content={content}
                 className="chr-md"
                 format="html"
-                componentExtensions={[AlertExtension]}
+                componentExtensions={[AlertExtension, SubtextExtension]}
             />
         </>
     );

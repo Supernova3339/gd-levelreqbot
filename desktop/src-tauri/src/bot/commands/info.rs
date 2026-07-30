@@ -7,7 +7,7 @@ pub async fn info(ctx: &Ctx<'_>) -> Option<String> {
         return Some(format!("@{} — usage: !info <level_id>", ctx.msg.username));
     };
 
-    match crate::gd::get_level_by_id(level_id).await {
+    match crate::gd::get_level_by_id(level_id, None).await {
         Ok(Some(lvl)) => {
             let mut parts = vec![
                 format!("{} ({})", lvl.level_name, lvl.level_id),

@@ -1,0 +1,6 @@
+<component name="ProjectRunConfigurationManager">
+    <configuration default="false" name="Installer: Build (full)" type="NodeJSConfigurationType"
+                   path-to-js-file="build.mjs" working-dir="$PROJECT_DIR$/tools/installer">
+        <method v="2"/>
+    </configuration>
+</component>

@@ -13,6 +13,7 @@ import {
     refreshTwitchToken,
     type TwitchUserInfo,
 } from "../../lib/commands";
+import {TwitchRewardPicker} from "../../components/TwitchRewardPicker";
 
 function AccountCard({
                          title, description, user, loading, error, connecting,
@@ -361,6 +362,22 @@ export function TwitchSettings({refreshKey = 0}: { refreshKey?: number }) {
                         style={{backgroundColor: "var(--color-accent)", color: "#fff", opacity: saving ? 0.5 : 1}}>
                     {saving ? "Saving..." : "Save"}
                 </button>
+            </div>
+
+            {/* Channel points work automatically once connected — this is just reward
+                management (create/edit/delete). Which reward triggers what is wired up
+                per-module (e.g. Level Queue → Settings → Integrations) or per-command
+                (Settings → Commands → a command's "Additional listener"). */}
+            <div className="flex flex-col gap-2">
+                <div>
+                    <h3 className="text-xs font-semibold" style={{color: "#a0a0a0"}}>Channel-point rewards</h3>
+                    <p className="text-xs mt-0.5" style={{color: "#555"}}>
+                        Manage rewards here; bind one to a command's listener in Settings → Commands, or to a
+                        module's redemption settings. Icons can only be set from the Twitch dashboard — Twitch's
+                        API doesn't expose that, so there's no control for it here.
+                    </p>
+                </div>
+                <TwitchRewardPicker/>
             </div>
         </div>
     );

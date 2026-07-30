@@ -1,6 +1,5 @@
 import React, {useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState,} from "react";
 import {computePosition, flip, offset, shift} from "@floating-ui/dom";
-import {useDebouncedCallback} from "use-debounce";
 import {EditorToolbar} from "./EditorToolbar";
 import {WarningIcon} from "../../icons";
 import {highlightRhai} from "../../../lib/scripting/rhai-highlighter";
@@ -10,10 +9,16 @@ import type {FindState} from "./FindBar";
 import {buildMatchOverlay, computeMatches, EMPTY_FIND, FindBar} from "./FindBar";
 import {KeybindContext, matchesShortcut} from "../../../hooks/useKeybinds";
 import type {CompletionItem} from "../../../lib/scripting/proxy-api";
-import {PROXY_API, PROXY_NAMES} from "../../../lib/scripting/proxy-api";
+import {availableProxyNames, PROXY_API} from "../../../lib/scripting/proxy-api";
 import {detectTrigger} from "./AutocompleteDropdown";
+import {useShellEnabled} from "../../../hooks/useShellEnabled";
 
 export const AC_STORAGE_KEY = "gdlqbot.autocomplete";
+
+interface LockedRange {
+    startLine: number;
+    endLine: number;
+}
 
 interface Props {
     text: string;
@@ -23,6 +28,83 @@ interface Props {
     commandName?: string;
     onFind?: () => void;
     onRunTest?: () => void;
+    isModuleScript?: boolean;
+    /** Line ranges locked by the module author (`// @lock` blocks) — shown as
+     *  a striped caution band drawn *inline in the highlighted text*, not a
+     *  separately-positioned overlay: it scrolls perfectly in sync because
+     *  it's part of the same content flow, no scrollTop math involved. Purely
+     *  visual — typing there is still physically possible, save-time
+     *  rejection (see CommandsPage/save_script) is the actual enforcement. */
+    lockedLines?: LockedRange[];
+}
+
+/** Wrap each locked line's highlighted HTML in a `display:block` striped band.
+ *  Operates on the already-highlighted HTML from `highlightRhai`, splitting on
+ *  "\n" — safe because no single line's highlighted output ever contains a
+ *  literal newline (each line is highlighted independently, see rhai-highlighter).
+ *
+ *  The `// @lock` / `// @unlock` marker lines themselves are replaced with a
+ *  plain-language label instead of showing the raw comment syntax — they're
+ *  still real lines in the underlying text (line numbering/gutter alignment
+ *  needs that, and save-time enforcement reads the raw text directly), just
+ *  not shown as literal `// @lock` in the rendered view.
+ *
+ *  When any line is locked, *every* line gets wrapped as `display:block` and
+ *  the pieces are joined with no separator — mixing block-level locked lines
+ *  with plain inline text joined by literal "\n" would double up the line
+ *  break on locked lines (one from the block box, one from `white-space:pre`
+ *  rendering the "\n" it's still sitting next to). Untouched (no locked
+ *  lines) is the overwhelmingly common case and returns the original html
+ *  completely unmodified. */
+function markLockedLines(html: string, lockedLines: LockedRange[]): string {
+    if (lockedLines.length === 0) return html;
+    const lines = html.split("\n");
+    const locked = new Set<number>();
+    const startMarkerLines = new Set<number>();
+    const endMarkerLines = new Set<number>();
+    for (const r of lockedLines) {
+        for (let l = r.startLine; l <= r.endLine; l++) locked.add(l);
+        startMarkerLines.add(r.startLine);
+        endMarkerLines.add(r.endLine);
+    }
+
+    // The gradient band wraps each *contiguous run* of locked lines in one
+    // block, not one block per line — a background-image on a block element
+    // is positioned relative to that element's own box, so one span per line
+    // made the diagonal stripe restart at every single line instead of
+    // flowing across the whole locked region.
+    const bandStyle = "display:block;position:relative;background:rgba(245,158,11,0.09);"
+        + "background-image:repeating-linear-gradient(135deg,rgba(245,158,11,0.09) 0px,rgba(245,158,11,0.09) 6px,transparent 6px,transparent 14px);"
+        + "box-shadow:inset 3px 0 0 0 rgba(251,191,36,0.75);";
+    const labelStyle = "color:#fbbf24;font-style:italic;opacity:0.9;";
+
+    const out: string[] = [];
+    let i = 0;
+    while (i < lines.length) {
+        const lineNo = i + 1;
+        if (!locked.has(lineNo)) {
+            out.push(`<span style="display:block;">${lines[i] || " "}</span>`);
+            i++;
+            continue;
+        }
+
+        // Consume the whole contiguous run starting here into one block.
+        const runStart = i;
+        while (i < lines.length && locked.has(i + 2)) i++;
+        const runLines = lines.slice(runStart, i + 1).map((lineHtml, j) => {
+            const ln = runStart + j + 1;
+            if (startMarkerLines.has(ln)) {
+                return `<span style="${labelStyle}">Locked by the module author — everything below, until "unlocked" ↓</span>`;
+            }
+            if (endMarkerLines.has(ln)) {
+                return `<span style="${labelStyle}">↑ end of locked section</span>`;
+            }
+            return lineHtml || " ";
+        });
+        out.push(`<span style="${bandStyle}">${runLines.join("\n")}</span>`);
+        i++;
+    }
+    return out.join("");
 }
 
 const LINE_GUTTER_W = 44;
@@ -290,8 +372,24 @@ function getLineInfo(text: string, pos: number) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function TextEditor({text, onChange, errors, prefs, commandName, onFind, onRunTest}: Props) {
+export function TextEditor({
+                               text,
+                               onChange,
+                               errors,
+                               prefs,
+                               commandName,
+                               onFind,
+                               onRunTest,
+                               isModuleScript = false,
+                               lockedLines = []
+                           }: Props) {
     const binds = useContext(KeybindContext);
+    const shellEnabled = useShellEnabled();
+    const scriptCtx = useMemo(
+        () => ({isModule: isModuleScript, shellEnabled}),
+        [isModuleScript, shellEnabled]
+    );
+    const availableProxies = useMemo(() => availableProxyNames(scriptCtx), [scriptCtx]);
     const taRef = useRef<HTMLTextAreaElement>(null);
     const overlayRef = useRef<HTMLDivElement>(null);
     const matchRef = useRef<HTMLDivElement>(null);
@@ -299,7 +397,7 @@ export function TextEditor({text, onChange, errors, prefs, commandName, onFind, 
     const mountedRef = useRef(true);
 
     // ── Sync highlight (no delay) ──────────────────────────────────────────────
-    const html = useMemo(() => highlightRhai(text), [text]);
+    const html = useMemo(() => markLockedLines(highlightRhai(text), lockedLines), [text, lockedLines]);
 
     const [matchHtml, setMatchHtml] = useState("");
     const [currentLine, setCurrentLine] = useState(1);
@@ -415,19 +513,26 @@ export function TextEditor({text, onChange, errors, prefs, commandName, onFind, 
         });
     };
 
-    // ── Autocomplete — debounced text analysis ONLY (no DOM reads here) ────────
+    // ── Autocomplete trigger check — synchronous, no debounce ─────────────────
     //
-    // The expensive caret position measurement (buildCaretAnchor) happens inside
-    // AcDropdown on mount, not here. This function is pure string work.
-    const runAcCheck = useDebouncedCallback(() => {
-        if (!acEnabled || !mountedRef.current) return;
+    // Runs directly off onInput (see handleInput below): a plain regex match
+    // against the text before the cursor plus an array filter, both cheap
+    // enough to not need debouncing, which only added a layer of timing that
+    // was hard to reason about (and about the specific bug reports: an
+    // earlier debounced version of this stopped triggering at all for some
+    // users with no console error — this version has no async gap between
+    // "user typed a dot" and "dropdown state is set").
+    const runAcCheck = useCallback(() => {
+        if (!acEnabled) return;
         const ta = taRef.current;
         if (!ta) return;
         const pos = ta.selectionStart;
         const trigger = detectTrigger(text, pos);
 
-        // No trigger or unknown proxy — close dropdown
-        if (!trigger || !PROXY_NAMES.includes(trigger.proxyName)) {
+        // No trigger, or a proxy that doesn't exist / isn't available in this
+        // script's context (e.g. `queue.` inside a module script) — close dropdown
+        // rather than offering completions that would fail at runtime.
+        if (!trigger || !availableProxies.includes(trigger.proxyName)) {
             lastTriggerRef.current = null;
             setAc(null);
             return;
@@ -444,18 +549,16 @@ export function TextEditor({text, onChange, errors, prefs, commandName, onFind, 
             return;
         }
 
+        // Same proxy+prefix as last check — update items in place without
+        // resetting `selected` or re-measuring position on every keystroke.
         const triggerKey = `${trigger.proxyName}.${trigger.prefix}`;
-
-        // If same proxy.prefix, just update items in-place (don't re-measure position)
-        if (lastTriggerRef.current === trigger.proxyName + ".") {
+        if (lastTriggerRef.current === triggerKey) {
             setAc((prev) => prev ? {...prev, items, cursorPos: pos} : {items, selected: 0, cursorPos: pos});
         } else {
-            // New trigger — record position so AcDropdown can measure on mount
-            lastTriggerRef.current = trigger.proxyName + ".";
+            lastTriggerRef.current = triggerKey;
             setAc({items, selected: 0, cursorPos: pos});
         }
-        void triggerKey;
-    }, 200);
+    }, [acEnabled, text, availableProxies]);
 
     const applyCompletion = useCallback((item: CompletionItem) => {
         const ta = taRef.current;
@@ -747,6 +850,7 @@ export function TextEditor({text, onChange, errors, prefs, commandName, onFind, 
                 commandName={commandName}
                 onFind={() => setFindOpen(true)}
                 onRunTest={onRunTest}
+                scriptCtx={scriptCtx}
                 acEnabled={acEnabled}
                 onToggleAc={() => {
                     const next = !acEnabled;

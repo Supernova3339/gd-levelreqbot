@@ -1,7 +1,7 @@
 // Shared script console — shows console.log/warn/error output from all running commands.
 // Uses consoleStore (module singleton) so events are collected even when this page is closed.
 
-import {useEffect, useRef, useState} from "react";
+import {useEffect, useMemo, useRef, useState} from "react";
 import type {ConsoleEntry} from "../lib/consoleStore";
 import {consoleStore} from "../lib/consoleStore";
 
@@ -32,12 +32,16 @@ export function ConsolePage() {
         if (!paused) bottomRef.current?.scrollIntoView({behavior: "instant"});
     }, [entries, paused]);
 
-    const visible = filter === "all" ? entries : entries.filter((e) => e.level === filter);
-    const counts = {
-        log: entries.filter((e) => e.level === "log").length,
-        warn: entries.filter((e) => e.level === "warn").length,
-        error: entries.filter((e) => e.level === "error").length,
-    };
+    // perf: single pass to derive both visible list and counts simultaneously
+    const {visible, counts} = useMemo(() => {
+        const c = {log: 0, warn: 0, error: 0};
+        const v: typeof entries = [];
+        for (const e of entries) {
+            c[e.level]++;
+            if (filter === "all" || e.level === filter) v.push(e);
+        }
+        return {visible: v, counts: c};
+    }, [entries, filter]);
 
     return (
         <div className="flex flex-col h-full" style={{backgroundColor: "#090909"}}>

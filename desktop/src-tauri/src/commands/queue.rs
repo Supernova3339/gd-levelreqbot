@@ -1,7 +1,7 @@
 use crate::bot::platform::ChatPlatform;
 use crate::bot::{BotState, BotStatus};
 use crate::config::AppConfig;
-use crate::queue::{NextLevel, QueuePage, QueueState};
+use crate::queue::{HistoryPage, NextLevel, QueuePage, QueueState};
 use std::sync::Arc;
 use tauri::{Emitter, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -9,23 +9,16 @@ use tokio::sync::RwLock;
 use tracing::warn;
 
 #[tauri::command]
-pub async fn get_viewer_queue(
+pub async fn get_queue(
+    queue_type: String,
     page: Option<u32>,
     per_page: Option<u32>,
     queue: State<'_, Arc<QueueState>>,
 ) -> Result<QueuePage, String> {
-    queue.get_page("viewer", page.unwrap_or(1), per_page.unwrap_or(10))
-        .await.map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn get_subscriber_queue(
-    page: Option<u32>,
-    per_page: Option<u32>,
-    queue: State<'_, Arc<QueueState>>,
-) -> Result<QueuePage, String> {
-    queue.get_page("subscriber", page.unwrap_or(1), per_page.unwrap_or(10))
-        .await.map_err(|e| e.to_string())
+    queue
+        .get_page(&queue_type, page.unwrap_or(1), per_page.unwrap_or(15))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -37,9 +30,17 @@ pub async fn add_to_queue(
     config: State<'_, Arc<RwLock<AppConfig>>>,
 ) -> Result<String, String> {
     let cfg = config.read().await;
-    queue.add_level(level_id, &username, is_subscriber, cfg.modes.sub,
-        cfg.limits.viewer_request_limit, cfg.limits.subscriber_request_limit)
-        .await.map_err(|e| e.to_string())
+    if !cfg.queue_open {
+        return Ok("Queue is currently closed.".into());
+    }
+    queue
+        .add_level_from(
+            level_id, &username, is_subscriber, cfg.modes.sub,
+            cfg.limits.viewer_request_limit, cfg.limits.subscriber_request_limit,
+            "manual", cfg.limits.max_queue_size,
+        )
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -56,6 +57,7 @@ pub async fn clear_queue(queue: State<'_, Arc<QueueState>>) -> Result<String, St
 }
 
 /// Pop the next level, announce in chat, optionally copy to clipboard, and show overlay.
+/// GD metadata is fetched in the background so the command returns immediately.
 #[tauri::command]
 pub async fn next_level(
     queue:  State<'_, Arc<QueueState>>,
@@ -70,7 +72,7 @@ pub async fn next_level(
     let result = queue.next_level(sub_mode).await.map_err(|e| e.to_string())?;
 
     if let Some(ref next) = result {
-        // ── Announce in Twitch chat if the bot is connected ──────────────────
+        // Announce in Twitch chat if the bot is connected
         {
             let status = bot.status.read().await.clone();
             if status == BotStatus::Connected {
@@ -87,33 +89,37 @@ pub async fn next_level(
             }
         }
 
-        // ── Auto-copy level ID to clipboard ───────────────────────────────────
+        // Auto-copy level ID to clipboard
         if auto_copy {
             let level_id_str = next.level_id.to_string();
             if let Err(e) = bot.app_handle.clipboard().write_text(level_id_str.clone()) {
                 warn!("Clipboard write failed: {e}");
             }
-
-            // Notify the frontend so it can show the overlay
-            bot.app_handle
-                .emit("level-copied", &level_id_str)
-                .ok();
+            bot.app_handle.emit("level-copied", &level_id_str).ok();
         }
 
-        // ── Fetch GD metadata for the overlay (best-effort, non-blocking) ───────
-        let gd_info = crate::gd::get_level_by_id(next.level_id).await.ok().flatten();
-
-        // ── Notify dashboard + overlay ────────────────────────────────────────
+        // Notify frontend immediately
         bot.app_handle.emit("queue-updated", ()).ok();
         bot.app_handle.emit("level-nexted", serde_json::json!({
             "level_id":   next.level_id,
             "username":   next.username,
             "queue_type": next.queue_type,
             "auto_copied": auto_copy,
-            "gd_name":    gd_info.as_ref().map(|l| &l.level_name),
-            "gd_diff":    gd_info.as_ref().map(|l| &l.difficulty),
-            "gd_stars":   gd_info.as_ref().map(|l| l.stars),
         })).ok();
+
+        // Fetch GD metadata in background; update overlay content without re-showing
+        let app      = bot.app_handle.clone();
+        let level_id = next.level_id;
+        tokio::spawn(async move {
+            if let Ok(Some(info)) = crate::gd::get_level_by_id(level_id, None).await {
+                app.emit("level-nexted-gd", serde_json::json!({
+                    "level_id": level_id,
+                    "gd_name":  info.level_name,
+                    "gd_diff":  info.difficulty,
+                    "gd_stars": info.stars,
+                })).ok();
+            }
+        });
     }
 
     Ok(result)
@@ -127,4 +133,66 @@ pub async fn get_queue_position(
 ) -> Result<Option<(i64, String)>, String> {
     let sub_mode = config.read().await.modes.sub;
     queue.get_position(level_id, sub_mode).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn promote_level(
+    level_id: i64,
+    queue: State<'_, Arc<QueueState>>,
+    bot: State<'_, Arc<BotState>>,
+) -> Result<String, String> {
+    let msg = queue.promote_level(level_id).await.map_err(|e| e.to_string())?;
+    bot.app_handle.emit("queue-updated", ()).ok();
+    Ok(msg)
+}
+
+#[tauri::command]
+pub async fn shuffle_queue(
+    queue: State<'_, Arc<QueueState>>,
+    bot: State<'_, Arc<BotState>>,
+) -> Result<String, String> {
+    let msg = queue.shuffle_viewer_queue().await.map_err(|e| e.to_string())?;
+    bot.app_handle.emit("queue-updated", ()).ok();
+    Ok(msg)
+}
+
+#[tauri::command]
+pub async fn open_queue(
+    config: State<'_, Arc<RwLock<AppConfig>>>,
+    bot: State<'_, Arc<BotState>>,
+) -> Result<(), String> {
+    let mut cfg = config.write().await;
+    cfg.queue_open = true;
+    cfg.save().await.map_err(|e| e.to_string())?;
+    bot.app_handle.emit("queue-status-changed", true).ok();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn close_queue(
+    config: State<'_, Arc<RwLock<AppConfig>>>,
+    bot: State<'_, Arc<BotState>>,
+) -> Result<(), String> {
+    let mut cfg = config.write().await;
+    cfg.queue_open = false;
+    cfg.save().await.map_err(|e| e.to_string())?;
+    bot.app_handle.emit("queue-status-changed", false).ok();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_queue_history(
+    page: Option<u32>,
+    per_page: Option<u32>,
+    queue: State<'_, Arc<QueueState>>,
+) -> Result<HistoryPage, String> {
+    queue
+        .get_history(page.unwrap_or(1), per_page.unwrap_or(30))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn clear_queue_history(queue: State<'_, Arc<QueueState>>) -> Result<(), String> {
+    queue.clear_history().await.map_err(|e| e.to_string())
 }

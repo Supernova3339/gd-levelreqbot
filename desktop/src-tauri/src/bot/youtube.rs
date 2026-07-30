@@ -9,6 +9,13 @@ use tracing::{error, info, warn};
 
 const POLL_INTERVAL_SECS: u64 = 5;
 
+#[derive(Debug, Clone)]
+pub struct YouTubeChannel {
+    pub id:    String,
+    pub title: String,
+}
+
+#[allow(dead_code)]
 pub struct YouTubeBot {
     access_token:       RwLock<String>,
     live_chat_id:       RwLock<Option<String>>,
@@ -55,6 +62,27 @@ impl YouTubeBot {
         resp.items.into_iter().next()
             .map(|i| i.snippet.live_chat_id)
             .context("no active YouTube live broadcast found")
+    }
+
+    /// General-purpose Data API lookup: the connected account's own channel.
+    /// Useful outside the live-chat flow (e.g. scripts wanting the channel name/id).
+    pub async fn get_channel(&self) -> Result<YouTubeChannel> {
+        #[derive(Deserialize)] struct Resp { items: Vec<Item> }
+        #[derive(Deserialize)] struct Item { id: String, snippet: Snippet }
+        #[derive(Deserialize)] struct Snippet { title: String }
+
+        let token = self.access_token.read().await.clone();
+        let resp: Resp = self.http
+            .get("https://www.googleapis.com/youtube/v3/channels")
+            .bearer_auth(&token)
+            .query(&[("part", "snippet"), ("mine", "true")])
+            .send().await?
+            .error_for_status()?
+            .json().await
+            .context("failed to parse YouTube channel response")?;
+
+        let item = resp.items.into_iter().next().context("no channel found for this token")?;
+        Ok(YouTubeChannel { id: item.id, title: item.snippet.title })
     }
 }
 

@@ -1,17 +1,27 @@
-﻿import {useEffect, useRef, useState} from "react";
+﻿import React, {lazy, Suspense, useEffect, useRef, useState} from "react";
 import {listen} from "@tauri-apps/api/event";
+import {invoke} from "@tauri-apps/api/core";
 import {getVersion} from "@tauri-apps/api/app";
 import {ChevronRightIcon, CloseIcon} from "./icons";
-import {TwitchSettings} from "../pages/settings/TwitchSettings";
-import {YouTubeSettings} from "../pages/settings/YouTubeSettings";
-import {QueueSettings} from "../pages/settings/QueueSettings";
-import {StartupSettings} from "../pages/settings/StartupSettings";
-import {DevelopmentSettings} from "../pages/settings/DevelopmentSettings";
-import {AppearanceSettings} from "../pages/settings/AppearanceSettings";
-import {ScriptingSettings} from "../pages/settings/ScriptingSettings";
-import {WebSocketSettings} from "../pages/settings/WebSocketSettings";
-import {KeybindsSettings} from "../pages/settings/KeybindsSettings";
 import type {KeybindMap} from "../hooks/useKeybinds";
+import {listModules} from "../lib/commands";
+import type {ModuleManifest} from "../lib/types";
+
+const PageRenderer = lazy(() => import("./modules/PageRenderer").then(m => ({default: m.PageRenderer})));
+
+// perf: lazy-load settings panels so they don't bloat the initial bundle.
+// Each panel is only fetched when the user first opens that settings section.
+const TwitchSettings = React.lazy(() => import("../pages/settings/TwitchSettings").then((m) => ({default: m.TwitchSettings})));
+const YouTubeSettings = React.lazy(() => import("../pages/settings/YouTubeSettings").then((m) => ({default: m.YouTubeSettings})));
+const StartupSettings = React.lazy(() => import("../pages/settings/StartupSettings").then((m) => ({default: m.StartupSettings})));
+const DevelopmentSettings = React.lazy(() => import("../pages/settings/DevelopmentSettings").then((m) => ({default: m.DevelopmentSettings})));
+const AppearanceSettings = React.lazy(() => import("../pages/settings/AppearanceSettings").then((m) => ({default: m.AppearanceSettings})));
+const ScriptingSettings = React.lazy(() => import("../pages/settings/ScriptingSettings").then((m) => ({default: m.ScriptingSettings})));
+const WebSocketSettings = React.lazy(() => import("../pages/settings/WebSocketSettings").then((m) => ({default: m.WebSocketSettings})));
+const KeybindsSettings = React.lazy(() => import("../pages/settings/KeybindsSettings").then((m) => ({default: m.KeybindsSettings})));
+const AboutSettings = React.lazy(() => import("../pages/settings/AboutSettings").then((m) => ({default: m.AboutSettings})));
+const GDSettings = React.lazy(() => import("../pages/settings/GDSettings").then((m) => ({default: m.GDSettings})));
+const AccountSettings = React.lazy(() => import("../pages/settings/AccountSettings").then((m) => ({default: m.AccountSettings})));
 
 const APP_FLAIR = (import.meta.env.VITE_APP_FLAIR as string | undefined) ?? "nightly";
 const FLAIR_COLOR: Record<string, string> = {
@@ -23,7 +33,10 @@ const FLAIR_COLOR: Record<string, string> = {
 type LeafId =
     | "appearance" | "startup" | "development"
     | "twitch" | "youtube"
-    | "queue" | "scripting" | "websocket" | "keybinds";
+    | "scripting" | "websocket" | "keybinds"
+    | "gd"
+    | "account"
+    | "about";
 
 interface Leaf {
     kind: "leaf";
@@ -60,7 +73,6 @@ const NAV: NavItem[] = [
             {kind: "leaf", id: "youtube", label: "YouTube"},
         ],
     },
-    {kind: "leaf", id: "queue", label: "Queue"},
     {
         kind: "group",
         id: "editor",
@@ -71,9 +83,19 @@ const NAV: NavItem[] = [
         ],
     },
     {kind: "leaf", id: "websocket", label: "WebSocket"},
+    {
+        kind: "group",
+        id: "integrations",
+        label: "Integrations",
+        children: [
+            {kind: "leaf", id: "gd", label: "Geometry Dash"},
+        ],
+    },
+    {kind: "leaf", id: "account", label: "Account"},
 ];
 
-function parentOf(id: LeafId): string | null {
+function parentOf(id: LeafId | string): string | null {
+    if (id.startsWith("module:")) return "modules";
     for (const item of NAV) {
         if (item.kind === "group" && item.children.some((c) => c.id === id))
             return item.id;
@@ -86,6 +108,7 @@ function parentOf(id: LeafId): string | null {
 interface SettingsModalProps {
     open: boolean;
     onClose: () => void;
+    onShowChangelog: () => void;
     keybinds: {
         binds: KeybindMap;
         setBind: (action: string, shortcut: string) => Promise<void>;
@@ -93,18 +116,37 @@ interface SettingsModalProps {
     };
 }
 
-export function SettingsModal({open, onClose, keybinds}: SettingsModalProps) {
-    const [active, setActive] = useState<LeafId>("appearance");
+export function SettingsModal({open, onClose, onShowChangelog, keybinds}: SettingsModalProps) {
+    const [active, setActive] = useState<LeafId | string>("appearance");
     const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["general"]));
     const backdropRef = useRef<HTMLDivElement>(null);
     const [twitchRefresh, setTwitchRefresh] = useState(0);
     const [youtubeRefresh, setYoutubeRefresh] = useState(0);
     const [version, setVersion] = useState("…");
+    const [moduleSettings, setModuleSettings] = useState<ModuleManifest[]>([]);
+    // Development tab is only available when the installer enabled developer
+    // options (is_dev_install; always true in debug builds).
+    const [devInstall, setDevInstall] = useState(import.meta.env.DEV);
 
     useEffect(() => {
         getVersion().then(setVersion).catch(() => {
         });
+        invoke<boolean>("is_dev_install").then(setDevInstall).catch(() => {
+        });
     }, []);
+
+    const nav: NavItem[] = devInstall ? NAV : NAV.map((item) =>
+        item.kind === "group"
+            ? {...item, children: item.children.filter((c) => c.id !== "development")}
+            : item
+    );
+
+    useEffect(() => {
+        if (!open) return;
+        listModules().then(mods => {
+            setModuleSettings(mods.filter(m => m.enabled && m.settings_page));
+        }).catch(e => console.error("Failed to load module settings entries", e));
+    }, [open]);
 
     useEffect(() => {
         if (!open) return;
@@ -130,9 +172,9 @@ export function SettingsModal({open, onClose, keybinds}: SettingsModalProps) {
         };
     }, []);
 
-    const navigate = (id: LeafId) => {
+    const navigate = (id: LeafId | string) => {
         setActive(id);
-        const p = parentOf(id);
+        const p = parentOf(id as LeafId);
         if (p) setExpanded((prev) => new Set([...prev, p]));
     };
 
@@ -188,7 +230,7 @@ export function SettingsModal({open, onClose, keybinds}: SettingsModalProps) {
                          style={{width: 188, borderRight: "1px solid #222", backgroundColor: "#0f0f0f"}}>
                         {/* Scrollable nav items */}
                         <div className="flex-1 overflow-y-auto py-2">
-                            {NAV.map((item) =>
+                            {nav.map((item) =>
                                 item.kind === "leaf" ? (
                                     <NavLeafBtn key={item.id} label={item.label}
                                                 active={active === item.id} onClick={() => navigate(item.id)}/>
@@ -205,41 +247,107 @@ export function SettingsModal({open, onClose, keybinds}: SettingsModalProps) {
                             )}
                         </div>
 
-                        {/* Sticky version footer */}
-                        <div className="flex-shrink-0 px-4 py-3"
-                             style={{borderTop: "1px solid #1e1e1e"}}>
-                            <div className="flex items-center gap-1.5">
-                                <span style={{fontSize: 11, color: "#444"}}>v{version}</span>
-                                <span style={{
-                                    fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
+                        {/* Module settings entries */}
+                        {moduleSettings.length > 0 && (
+                            <>
+                                <div style={{height: 1, margin: "6px 12px", backgroundColor: "#1e1e1e"}}/>
+                                <div style={{
+                                    padding: "4px 16px 2px",
+                                    fontSize: 10,
+                                    fontWeight: 600,
+                                    letterSpacing: "0.07em",
                                     textTransform: "uppercase",
-                                    padding: "1px 5px", borderRadius: 4,
-                                    backgroundColor: `${FLAIR_COLOR[APP_FLAIR] ?? "#818cf8"}18`,
-                                    color: FLAIR_COLOR[APP_FLAIR] ?? "#818cf8",
-                                    border: `1px solid ${FLAIR_COLOR[APP_FLAIR] ?? "#818cf8"}33`,
+                                    color: "#444"
                                 }}>
-                  {APP_FLAIR}
-                </span>
-                            </div>
+                                    Modules
+                                </div>
+                                {moduleSettings.map(m => (
+                                    <NavLeafBtn
+                                        key={m.id}
+                                        label={m.name}
+                                        active={active === `module:${m.id}`}
+                                        onClick={() => navigate(`module:${m.id}`)}
+                                    />
+                                ))}
+                            </>
+                        )}
+
+                        {/* Sticky footer: version chip + info/About icon */}
+                        <div className="flex-shrink-0 flex items-center px-4 py-3 gap-1.5"
+                             style={{borderTop: "1px solid #1e1e1e"}}>
+                            <span style={{fontSize: 11, color: "#444"}}>v{version}</span>
+                            <span style={{
+                                fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
+                                textTransform: "uppercase", padding: "1px 5px", borderRadius: 4,
+                                backgroundColor: `${FLAIR_COLOR[APP_FLAIR] ?? "#818cf8"}18`,
+                                color: FLAIR_COLOR[APP_FLAIR] ?? "#818cf8",
+                                border: `1px solid ${FLAIR_COLOR[APP_FLAIR] ?? "#818cf8"}33`,
+                            }}>
+                                {APP_FLAIR}
+                            </span>
+                            <button
+                                title="About"
+                                onClick={() => navigate("about")}
+                                className="flex items-center justify-center rounded ml-auto"
+                                style={{
+                                    width: 20, height: 20, background: "none", border: "none",
+                                    cursor: "pointer", flexShrink: 0,
+                                    color: active === "about" ? "var(--color-accent)" : "#2e2e2e",
+                                }}
+                                onMouseEnter={(e) => {
+                                    if (active !== "about") e.currentTarget.style.color = "#666";
+                                }}
+                                onMouseLeave={(e) => {
+                                    if (active !== "about") e.currentTarget.style.color = "#2e2e2e";
+                                }}
+                            >
+                                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                                    <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.4"/>
+                                    <path d="M8 7v4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                                    <circle cx="8" cy="5" r="0.75" fill="currentColor"/>
+                                </svg>
+                            </button>
                         </div>
                     </nav>
 
                     {/* Content */}
-                    <div className="flex-1 overflow-auto">
-                        <div className="p-6" style={{maxWidth: 560}}>
-                            {active === "appearance" && <AppearanceSettings/>}
-                            {active === "startup" && <StartupSettings/>}
-                            {active === "development" && <DevelopmentSettings/>}
-                            {active === "twitch" && <TwitchSettings refreshKey={twitchRefresh}/>}
-                            {active === "youtube" && <YouTubeSettings refreshKey={youtubeRefresh}/>}
-                            {active === "queue" && <QueueSettings/>}
-                            {active === "scripting" && <ScriptingSettings/>}
-                            {active === "keybinds" &&
-                                <KeybindsSettings binds={keybinds.binds} setBind={keybinds.setBind}
-                                                  resetBind={keybinds.resetBind}/>}
-                            {active === "websocket" && <WebSocketSettings/>}
-                        </div>
-                    </div>
+                    {(() => {
+                        const modMatch = active.startsWith("module:") ? active.slice(7) : null;
+                        const modManifest = modMatch ? moduleSettings.find(m => m.id === modMatch) : null;
+                        if (modManifest && modManifest.settings_page) {
+                            return (
+                                <div className="flex-1 min-h-0 overflow-hidden" style={{position: "relative"}}>
+                                    <Suspense fallback={<div
+                                        style={{color: "#2a2a2a", fontSize: 12, padding: 24}}>Loading…</div>}>
+                                        <PageRenderer moduleId={modManifest.id} pageFile={modManifest.settings_page}/>
+                                    </Suspense>
+                                </div>
+                            );
+                        }
+                        return (
+                            <div className="flex-1 overflow-auto">
+                                <div className="p-6" style={{maxWidth: 560}}>
+                                    <React.Suspense fallback={
+                                        <div style={{color: "#2a2a2a", fontSize: 12, paddingTop: 24}}>Loading…</div>
+                                    }>
+                                        {active === "appearance" && <AppearanceSettings/>}
+                                        {active === "startup" && <StartupSettings/>}
+                                        {active === "development" && <DevelopmentSettings/>}
+                                        {active === "twitch" && <TwitchSettings refreshKey={twitchRefresh}/>}
+                                        {active === "youtube" && <YouTubeSettings refreshKey={youtubeRefresh}/>}
+                                        {active === "scripting" && <ScriptingSettings/>}
+                                        {active === "keybinds" &&
+                                            <KeybindsSettings binds={keybinds.binds} setBind={keybinds.setBind}
+                                                              resetBind={keybinds.resetBind}/>}
+                                        {active === "websocket" && <WebSocketSettings/>}
+                                        {active === "gd" && <GDSettings/>}
+                                        {active === "account" && <AccountSettings/>}
+                                        {active === "about" && <AboutSettings onShowChangelog={onShowChangelog}/>}
+                                    </React.Suspense>
+                                </div>
+                            </div>
+                        );
+                    })()}
                 </div>
             </div>
         </div>

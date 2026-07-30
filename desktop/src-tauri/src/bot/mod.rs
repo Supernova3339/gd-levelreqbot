@@ -1,9 +1,12 @@
 pub mod cmd_cache;
 pub mod commands;
 pub mod dev;
+pub mod eventsub;
 pub mod handler;
 pub mod platform;
+pub mod redemption_handler;
 pub mod twitch;
+pub mod twitch_api;
 pub mod youtube;
 
 use crate::bot::twitch::TwitchBot;

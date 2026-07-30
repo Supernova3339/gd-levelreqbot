@@ -8,6 +8,7 @@ import {ScriptTestPanel} from "./ScriptTestPanel";
 import {parseFlow} from "../canvas/graphToRhai";
 import type {Directive} from "../../../lib/scripting/directives";
 import {buildScript, getBodyText, parseDirectives} from "../../../lib/scripting/directives";
+import {extractLockedBlocks} from "../../../lib/scripting/lockRegions";
 import type {Edge, Node} from "reactflow";
 import type {ScriptNodeData} from "../canvas/NodeDefinitions";
 
@@ -17,38 +18,46 @@ interface Props {
     commandName?: string;
     editorMode: "text" | "visual";   // set per-command, not switchable here
     cmdId?: number | "new";
+    /** True for module-owned command scripts (has `ms`, no legacy queue/store/data/db) —
+     *  drives which proxies the autocomplete/toolbar offers. Defaults to false (custom command). */
+    isModuleScript?: boolean;
 }
 
-export function ScriptEditor({initialText, onChange, commandName, editorMode, cmdId}: Props) {
+export function ScriptEditor({initialText, onChange, commandName, editorMode, cmdId, isModuleScript = false}: Props) {
     const [prefs] = useScriptingPrefs();
 
     // ── Parse initial text into directives + body ───────────────────────────────
     const [directive, setDirective] = useState<Directive>(() => parseDirectives(initialText));
     const [bodyText, setBodyText] = useState(() => getBodyText(initialText));
 
-    // Combine directive + body into a full script string for saving
-    const buildFull = (d: Directive, body: string) => buildScript(d, body);
+    // Visual band: found directly in whatever's currently on screen — no
+    // fetch, no cross-referencing an "original" copy, no async race to lose.
+    // If `// @lock` / `// @unlock` are in the text, they're highlighted;
+    // that's the whole rule. (The save-time tamper check, which DOES need to
+    // compare against the module's real default, lives in CommandsPage.)
+    const lockedLines = useMemo(() => extractLockedBlocks(bodyText), [bodyText]);
 
     // Expose combined text to parent via onChange
-    const emitChange = (d: Directive, body: string) => {
-        onChange(buildFull(d, body));
-    };
+    // perf: useCallback so these references are stable and don't cause child re-renders
+    const emitChange = React.useCallback((d: Directive, body: string) => {
+        onChange(buildScript(d, body));
+    }, [onChange]);
 
-    const handleDirectiveChange = (d: Directive) => {
+    const handleDirectiveChange = React.useCallback((d: Directive) => {
         setDirective(d);
         emitChange(d, bodyText);
-    };
+    }, [emitChange, bodyText]);
 
-    const handleBodyChange = (body: string) => {
+    const handleBodyChange = React.useCallback((body: string) => {
         setBodyText(body);
         emitChange(directive, body);
-    };
+    }, [emitChange, directive]);
 
     const errors = useEditorErrors(bodyText);
 
-    // Used by text ref in CommandsPage to get current full text
-    const fullTextRef = useRef(buildFull(directive, bodyText));
-    fullTextRef.current = buildFull(directive, bodyText);
+    // Used by test panel to get current full text without causing re-renders
+    const fullTextRef = useRef(buildScript(directive, bodyText));
+    fullTextRef.current = buildScript(directive, bodyText);
 
     // Canvas state
     const flow = useMemo(() => parseFlow(initialText), []);
@@ -65,15 +74,33 @@ export function ScriptEditor({initialText, onChange, commandName, editorMode, cm
     const bodyTextRef = useRef(bodyText);
     bodyTextRef.current = bodyText;
 
+    // perf: stable refs so useScriptingKeybinds doesn't re-subscribe on every render
+    const directiveRef = React.useRef(directive);
+    directiveRef.current = directive;
+
+    // perf: stable setText so the keybinds hook object doesn't change identity each render
+    const setTextKeybind = React.useCallback((body: string) => {
+        setBodyText(body);
+        emitChange(directiveRef.current, body);
+    }, [emitChange]);
+
     useScriptingKeybinds({
         onSwitchMode: () => {
         },
         getText: () => bodyTextRef.current,
-        setText: (body) => {
-            setBodyText(body);
-            emitChange(directive, body);
-        },
+        setText: setTextKeybind,
     });
+
+    // perf: stable callback so TextEditor.memo can bail out
+    const handleRunTest = React.useCallback(() => {
+        if (!testOpen) {
+            setTestOpen(true);
+            localStorage.setItem("gdlqbot.testpanel_open", "1");
+            setTimeout(() => runRef.current?.(), 50);
+        } else {
+            runRef.current?.();
+        }
+    }, [testOpen]);
 
     const handleVisual = (rhai: string) => {
         // Visual editor produces full text including @editor directive; parse it
@@ -107,17 +134,9 @@ export function ScriptEditor({initialText, onChange, commandName, editorMode, cm
                         errors={errors}
                         prefs={prefs}
                         commandName={commandName}
-                        onRunTest={() => {
-                            // Always open the panel and trigger a run
-                            if (!testOpen) {
-                                setTestOpen(true);
-                                localStorage.setItem("gdlqbot.testpanel_open", "1");
-                                // Run after the panel mounts (next tick)
-                                setTimeout(() => runRef.current?.(), 50);
-                            } else {
-                                runRef.current?.();
-                            }
-                        }}
+                        onRunTest={handleRunTest}
+                        isModuleScript={isModuleScript}
+                        lockedLines={lockedLines}
                     />
 
                     {/* Script tester */}

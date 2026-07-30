@@ -9,6 +9,7 @@ fn level_to_map(lvl: crate::gd::GDLevel) -> Dynamic {
     let mut m = Map::new();
     m.insert("id".into(), Dynamic::from(lvl.level_id));
     m.insert("name".into(), Dynamic::from(lvl.level_name));
+    m.insert("author".into(), Dynamic::from(lvl.author));
     m.insert("difficulty".into(), Dynamic::from(lvl.difficulty));
     m.insert("stars".into(), Dynamic::from(lvl.stars));
     m.insert("downloads".into(), Dynamic::from(lvl.downloads));
@@ -25,7 +26,7 @@ pub fn register(engine: &mut Engine) {
 
     engine.register_fn("fetch", |_: &mut GdProxy, id: &str| -> Dynamic {
         let n: i64 = match id.trim().parse() { Ok(n) => n, Err(_) => return Dynamic::UNIT };
-        match block_on(crate::gd::get_level_by_id(n)) {
+        match block_on(crate::gd::get_level_by_id(n, None)) {
             Ok(Some(lvl)) => level_to_map(lvl),
             Ok(None) => Dynamic::UNIT,
             Err(e) => { error!("gd.fetch: {e}"); Dynamic::UNIT }
@@ -33,7 +34,7 @@ pub fn register(engine: &mut Engine) {
     });
 
     engine.register_fn("search", |_: &mut GdProxy, query: &str| -> Vec<Dynamic> {
-        match block_on(crate::gd::get_levels(query, 0, 0)) {
+        match block_on(crate::gd::get_levels(query, 0, 0, None)) {
             Ok(levels) => levels.into_iter().map(level_to_map).collect(),
             Err(e) => { error!("gd.search: {e}"); vec![] }
         }

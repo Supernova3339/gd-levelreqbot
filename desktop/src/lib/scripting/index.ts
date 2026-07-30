@@ -10,8 +10,6 @@ export {
 
 export {highlightRhai} from "./rhai-highlighter";
 
-export {BUILTIN_SCRIPTS, BUILTIN_KEYS} from "./builtins";
-
 export type {ScriptTemplate, TemplateCategory} from "./templates";
 export {BUILTIN_TEMPLATES, TEMPLATE_CATEGORIES} from "./templates";
 

@@ -5,6 +5,7 @@ import {
     deleteCommand as deleteCommandApi,
     duplicateCommand as duplicateCommandApi,
     getCommands,
+    type ListenerDef,
     resetCounter as resetCounterApi,
     toggleCommandEnabled as toggleCommandEnabledApi,
     updateCommand,
@@ -39,6 +40,15 @@ function deserialize(raw: BotCommand): Command {
         counter: raw.counter,
         script: raw.script ?? null,
         script_mode: raw.script_mode ?? "text",
+        sort_order: raw.sort_order ?? 0,
+        chat_enabled: raw.chat_enabled ?? true,
+        listeners: (() => {
+            try {
+                return JSON.parse(raw.listeners) as ListenerDef[];
+            } catch {
+                return [];
+            }
+        })(),
     };
 }
 
@@ -71,6 +81,7 @@ export function useCommands(active = true) {
             updated.id, updated.trigger, JSON.stringify(updated.aliases), updated.enabled,
             updated.description, updated.response, JSON.stringify(updated.required_badges),
             updated.cooldown_seconds, updated.user_cooldown_seconds, updated.platform,
+            updated.chat_enabled, updated.listeners,
         );
         setCommands((prev) => prev.map((c) => c.id === updated.id ? updated : c));
     }, []);

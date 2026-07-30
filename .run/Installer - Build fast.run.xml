@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+    <configuration default="false" name="Installer: Build (fast, skip app)" type="NodeJSConfigurationType"
+                   path-to-js-file="build.mjs" working-dir="$PROJECT_DIR$/tools/installer"
+                   application-parameters="--skip-app-build --debug">
+        <method v="2"/>
+    </configuration>
+</component>

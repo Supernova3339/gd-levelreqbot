@@ -1,4 +1,6 @@
 ﻿use crate::modules::{ModuleManifest, ModuleState};
+use crate::queue::QueueState;
+use crate::urls::MARKETPLACE_BASE;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read as IoRead;
@@ -6,9 +8,103 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
+// ── Size limits (zip-bomb / OOM guards) ──────────────────────────────────────
+//
+// A marketplace package's bytes are, once past initial staff approval,
+// effectively author-controlled input handed to whoever installs it next —
+// including a staff reviewer manually pulling down a pending submission to
+// look at it, or any regular user installing an approved one. Two separate
+// things need bounding:
+//   1. The downloaded blob itself, before any zip parsing even starts — an
+//      oversized (or infinite/slow) response would OOM the installer just
+//      buffering it via reqwest's .bytes().
+//   2. Per-entry *decompressed* size during extraction — capping only the
+//      download size doesn't help here, since a classic zip bomb achieves a
+//      huge compression ratio (a few KB compressing millions-to-one). The
+//      only real defense is capping bytes actually read back out per entry,
+//      via Read::take, regardless of what the zip's central directory claims
+//      the size is.
+const MAX_DOWNLOAD_BYTES: u64 = 150 * 1024 * 1024; // 150MB
+const MAX_ZIP_ENTRY_BYTES: u64 = 50 * 1024 * 1024; // 50MB per file, post-decompression
+const MAX_ZIP_ENTRIES: usize = 4000;
+
+/// Reads an HTTP response body, aborting once it exceeds `MAX_DOWNLOAD_BYTES`
+/// — checks the advertised Content-Length first (cheap, catches the common
+/// case), then still caps the actual stream in case a server lies about it.
+async fn download_capped(resp: reqwest::Response) -> Result<Vec<u8>, String> {
+    if let Some(len) = resp.content_length() {
+        if len > MAX_DOWNLOAD_BYTES {
+            return Err(format!(
+                "Download too large ({len} bytes, max {MAX_DOWNLOAD_BYTES})"
+            ));
+        }
+    }
+    use futures_util::StreamExt;
+    let mut buf = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Download failed: {e}"))?;
+        buf.extend_from_slice(&chunk);
+        if buf.len() as u64 > MAX_DOWNLOAD_BYTES {
+            return Err(format!("Download exceeded max allowed size ({MAX_DOWNLOAD_BYTES} bytes)"));
+        }
+    }
+    Ok(buf)
+}
+
+/// Reads one zip entry fully, capping decompressed output at
+/// `MAX_ZIP_ENTRY_BYTES` regardless of the entry's declared size — see the
+/// module-level doc comment for why the declared size can't be trusted.
+fn read_zip_entry_capped(file: &mut dyn std::io::Read, label: &str) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    file.take(MAX_ZIP_ENTRY_BYTES + 1).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    if buf.len() as u64 > MAX_ZIP_ENTRY_BYTES {
+        return Err(format!("'{label}' exceeds max allowed size ({MAX_ZIP_ENTRY_BYTES} bytes) after decompression"));
+    }
+    Ok(buf)
+}
+
+// ── Dev watch registry ────────────────────────────────────────────────────────
+
+struct WatchEntry {
+    source_dir: String,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+/// App-managed state tracking all active hot-reload directory watchers.
+pub struct DevWatchRegistry {
+    inner: tokio::sync::Mutex<HashMap<String, WatchEntry>>,
+}
+
+impl DevWatchRegistry {
+    pub fn new() -> Self {
+        Self { inner: tokio::sync::Mutex::new(HashMap::new()) }
+    }
+    pub async fn stop(&self, module_id: &str) {
+        let mut inner = self.inner.lock().await;
+        if let Some(entry) = inner.remove(module_id) {
+            entry.handle.abort();
+        }
+    }
+}
+
 // â"€â"€ Marketplace types â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 fn default_module_type() -> String { "module".into() }
+fn default_source_type() -> String { "direct".into() }
+
+fn default_status() -> String { "published".into() }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceResource {
+    pub id: i64,
+    pub resource_type: String,
+    pub url: String,
+    #[serde(default)]
+    pub filename: String,
+    #[serde(default)]
+    pub sort_order: i32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketplaceEntry {
@@ -16,37 +112,83 @@ pub struct MarketplaceEntry {
     pub name: String,
     #[serde(default = "default_module_type")]
     pub package_type: String,
+    #[serde(default = "default_status")]
+    pub status: String,
     pub author: String,
     pub version: String,
-    /// Minimum GDLQBot app version required to install this module.
     pub min_app_version: String,
     pub description: String,
     pub icon: String,
+    /// Manifest-defined accent color (e.g. "#7c3aed") — takes priority over
+    /// the icon-name-derived color the UI falls back to when this is unset.
+    #[serde(default)]
+    pub color: Option<String>,
     pub verified: bool,
     pub premium: bool,
     pub downloads: u32,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub rating_avg: Option<f64>,
+    #[serde(default)]
+    pub rating_count: u32,
     pub tags: Vec<String>,
-    /// URL to download the .gdmod package file.
+    /// "direct" = use download_url; "github" = resolve from repo at install time
+    #[serde(default = "default_source_type")]
+    pub source_type: String,
+    /// Direct URL to the .gdmod package (empty for github source).
+    #[serde(default)]
     pub download_url: String,
     #[serde(default)]
     pub checksum: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub changelog: String,
+    #[serde(default)]
+    pub pub_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitter_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<MarketplaceResource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<serde_json::Value>,
-    /// For library packages with multiple components: list of component library names this package installs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<String>,
-    /// For .gdpck bundles: list of library IDs contained in the bundle.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub libraries: Vec<String>,
-    /// For .gdpck bundles: list of module IDs contained in the bundle.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modules: Vec<String>,
+    // GitHub source fields
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub github_repo: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub github_dir: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub github_tag: String,
 }
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 
 // â"€â"€ Version compatibility â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+/// Verify SHA-256 checksum of downloaded bytes against the release's `checksum`
+/// field, when one was provided. A release without a checksum is not
+/// rejected — direct-URL releases predate this field being mandatory.
+fn verify_checksum(bytes: &[u8], expected: &str, id: &str) -> Result<(), String> {
+    if expected.is_empty() {
+        return Ok(());
+    }
+    use sha2::{Digest, Sha256};
+    let actual = hex::encode(Sha256::digest(bytes));
+    if actual != expected {
+        return Err(format!(
+            "Checksum mismatch for '{id}': expected {expected}, got {actual}"
+        ));
+    }
+    Ok(())
+}
 
 fn check_version_compat(min_app_version: &str) -> Result<(), String> {
     let app = semver::Version::parse(APP_VERSION)
@@ -64,7 +206,155 @@ fn check_version_compat(min_app_version: &str) -> Result<(), String> {
 
 
 
-// â"€â"€ .gdmod extraction (for downloaded packages) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Path safety for IDs used as filesystem path components ──────────────────
+//
+// Module/library/package IDs used below to build install directories
+// (`modules_dir.join(author).join(pkg_type).join(id)` etc.) come straight out
+// of a manifest.json — either the module's OWN manifest (attacker-controlled
+// for a malicious marketplace submission) or a "modules"/"libraries" list
+// inside a .gdpck bundle. extract_gdmod already sanitises the *internal* zip
+// entry names against zip-slip, but that's a separate check from the id
+// itself: a manifest declaring an id of "../../../../Desktop" would still
+// pass that check and get joined straight into a real path. Every id used as
+// a single path segment must go through this first.
+fn safe_path_component(s: &str) -> Result<&str, String> {
+    if s.is_empty() || s == "." || s == ".." || s.contains(['/', '\\']) {
+        return Err(format!("Invalid id '{s}': must be a single path segment with no '/', '\\', or '..'"));
+    }
+    Ok(s)
+}
+
+// ── Hidden manifest ───────────────────────────────────────────────────────────
+//
+// A package's manifest.json can be carried two ways:
+//   1. Legacy: a normal, visible zip entry named "manifest.json" — how every
+//      package before this feature shipped. Only honored if that entry's
+//      recorded zip modification date is on/before LEGACY_MANIFEST_CUTOFF, so
+//      this is a closeable grandfather clause, not a permanent bypass: a
+//      freshly-built plain zip dated after the cutoff is rejected outright,
+//      forcing new packages through path 2.
+//   2. Hidden: no visible manifest.json entry at all. Instead, a zero-byte
+//      placeholder entry (HIDDEN_MANIFEST_ENTRY) carries the manifest JSON in
+//      its zip "extra field" — a TLV area the zip spec reserves for
+//      structural metadata (Zip64 sizes, Unix perms, NTFS timestamps…), never
+//      the file's actual content. No mainstream archive tool (7-Zip, WinRAR,
+//      Explorer) surfaces extra-field bytes anywhere in its UI, unlike the
+//      well-known "archive comment" field — extracting the archive normally
+//      just shows an empty file with an unremarkable name. This is
+//      obfuscation, not encryption: anyone who knows to look at the raw extra
+//      field with a hex editor can read it. It's meant to stop a casual
+//      "unzip and see a real manifest.json" inspection, not resist a
+//      determined one.
+const HIDDEN_MANIFEST_ENTRY: &str = ".gdlrb";
+const HIDDEN_MANIFEST_EXTRA_ID: u16 = 0x9401; // arbitrary, avoids PKWARE-registered IDs
+
+fn legacy_manifest_cutoff() -> zip::DateTime {
+    // Fixed on purpose — bump only if deliberately re-opening the legacy
+    // (visible manifest.json) path going forward.
+    zip::DateTime::from_date_and_time(2026, 7, 29, 23, 59, 58)
+        .expect("legacy_manifest_cutoff: valid fixed date")
+}
+
+/// Extra-field bytes are a sequence of (header_id: u16 LE, size: u16 LE, payload) records.
+fn find_extra_field(data: &[u8], target_id: u16) -> Option<Vec<u8>> {
+    let mut i = 0;
+    while i + 4 <= data.len() {
+        let id = u16::from_le_bytes([data[i], data[i + 1]]);
+        let size = u16::from_le_bytes([data[i + 2], data[i + 3]]) as usize;
+        let start = i + 4;
+        let end = start.checked_add(size)?;
+        if end > data.len() { break; }
+        if id == target_id {
+            return Some(data[start..end].to_vec());
+        }
+        i = end;
+    }
+    None
+}
+
+fn read_hidden_manifest(archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> Option<String> {
+    let file = archive.by_name(HIDDEN_MANIFEST_ENTRY).ok()?;
+    let extra = file.extra_data()?;
+    let bytes = find_extra_field(extra, HIDDEN_MANIFEST_EXTRA_ID)?;
+    String::from_utf8(bytes).ok()
+}
+
+/// Reads the root manifest.json of a standalone package (.gdmod/.gdpck/.gdlib),
+/// trying the hidden form first (see read_hidden_manifest) before falling back
+/// to a legacy visible entry. Used for the initial "what kind of package is
+/// this" peek — install_local_package/install_gdmod_bytes both need this
+/// before they know which install path to take, same as extract_gdmod needs
+/// it for a standalone module.
+pub fn read_root_manifest_str(bytes: &[u8]) -> Result<String, String> {
+    {
+        let cursor = std::io::Cursor::new(bytes);
+        if let Ok(mut archive) = zip::ZipArchive::new(cursor) {
+            if let Some(s) = read_hidden_manifest(&mut archive) {
+                return Ok(s);
+            }
+        }
+    }
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("Not a valid package file: {e}"))?;
+    let mut f = archive.by_name("manifest.json")
+        .map_err(|_| "Package is missing manifest.json (or the hidden-manifest form)".to_string())?;
+    let dated_ok = f.last_modified()
+        .map(|d| d <= legacy_manifest_cutoff())
+        .unwrap_or(false);
+    if !dated_ok {
+        return Err(
+            "manifest.json is dated after the legacy cutoff — rebuild this package with the hidden-manifest form".to_string()
+        );
+    }
+    let mut s = String::new();
+    f.read_to_string(&mut s).map_err(|e| e.to_string())?;
+    Ok(s)
+}
+
+/// Same idea as read_hidden_manifest, for a module nested inside a .gdpck
+/// bundle at `modules/<mod_id>/` rather than at the archive root. Only the
+/// module's own manifest gets the hidden treatment here — the bundle's own
+/// root manifest.json (just a listing of library/module/package ids, not a
+/// module's actual command/script logic) stays visible; there's nothing
+/// sensitive in it worth hiding.
+fn read_bundled_module_manifest(bytes: &[u8], mod_id: &str) -> Result<String, String> {
+    let hidden_path = format!("modules/{mod_id}/{HIDDEN_MANIFEST_ENTRY}");
+    {
+        let cursor = std::io::Cursor::new(bytes);
+        if let Ok(mut archive) = zip::ZipArchive::new(cursor) {
+            if let Ok(file) = archive.by_name(&hidden_path) {
+                if let Some(extra) = file.extra_data() {
+                    if let Some(field) = find_extra_field(extra, HIDDEN_MANIFEST_EXTRA_ID) {
+                        if let Ok(s) = String::from_utf8(field) {
+                            return Ok(s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Legacy fallback — same date-cutoff rule as extract_gdmod.
+    let visible_path = format!("modules/{mod_id}/manifest.json");
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
+    let mut f = archive.by_name(&visible_path)
+        .map_err(|_| format!("Bundle missing {visible_path} (or the hidden-manifest form)"))?;
+    let dated_ok = f.last_modified()
+        .map(|d| d <= legacy_manifest_cutoff())
+        .unwrap_or(false);
+    if !dated_ok {
+        return Err(format!(
+            "Module '{mod_id}': manifest.json is dated after the legacy cutoff — \
+             rebuild this bundle with the hidden-manifest form"
+        ));
+    }
+    let mut s = String::new();
+    f.read_to_string(&mut s).map_err(|e| e.to_string())?;
+    Ok(s)
+}
+
+// ── .gdmod extraction (for downloaded packages) ──────────────────────────────
 
 /// Extract a .gdmod (zip) package into `dest_dir`.
 /// Returns the parsed manifest.
@@ -76,11 +366,15 @@ pub fn extract_gdmod(
     let mut archive = zip::ZipArchive::new(cursor)
         .map_err(|e| format!("Invalid .gdmod package: {e}"))?;
 
+    if archive.len() > MAX_ZIP_ENTRIES {
+        return Err(format!("Package has too many entries ({}, max {MAX_ZIP_ENTRIES})", archive.len()));
+    }
+
     let module_dir = dest_dir;
     std::fs::create_dir_all(&module_dir)
         .map_err(|e| format!("Could not create module directory: {e}"))?;
 
-    let mut manifest_json: Option<String> = None;
+    let mut legacy_manifest_json: Option<String> = None;
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
@@ -88,6 +382,10 @@ pub fn extract_gdmod(
 
         // Sanitise path â€" prevent zip-slip attacks
         if name.contains("..") || name.starts_with('/') {
+            continue;
+        }
+        // Plumbing, not a real module file — never written to disk.
+        if name == HIDDEN_MANIFEST_ENTRY {
             continue;
         }
 
@@ -99,32 +397,109 @@ pub fn extract_gdmod(
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent).ok();
             }
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            // Capped regardless of the entry's declared size — see
+            // read_zip_entry_capped's doc comment (zip-bomb defense).
+            let buf = read_zip_entry_capped(&mut file, &name)?;
 
             if name == "manifest.json" {
-                manifest_json = Some(String::from_utf8_lossy(&buf).into_owned());
+                // Legacy visible-manifest path — only honored pre-cutoff (see
+                // the module-level doc comment above). Written to disk below
+                // like any other entry regardless, but only captured as the
+                // resolved manifest if the date check passes; a rejected one
+                // just becomes an inert file on disk, not the authoritative
+                // manifest.
+                let dated_ok = file.last_modified()
+                    .map(|d| d <= legacy_manifest_cutoff())
+                    .unwrap_or(false);
+                if dated_ok {
+                    legacy_manifest_json = Some(String::from_utf8_lossy(&buf).into_owned());
+                }
             }
 
             std::fs::write(&dest, &buf).map_err(|e| format!("Failed to write {name}: {e}"))?;
         }
     }
 
-    let json = manifest_json.ok_or_else(|| "Package is missing manifest.json".to_string())?;
+    let json = match legacy_manifest_json {
+        Some(j) => j,
+        None => read_hidden_manifest(&mut archive)
+            .ok_or_else(|| "Package is missing manifest.json".to_string())?,
+    };
+
+    // Always (re)write the resolved manifest to disk under its normal name —
+    // everything downstream (module_dir/manifest.json reads elsewhere in the
+    // codebase) expects a real file there regardless of which of the two
+    // paths above it came from.
+    std::fs::write(module_dir.join("manifest.json"), &json)
+        .map_err(|e| format!("Failed to write manifest.json: {e}"))?;
+
     serde_json::from_str::<ModuleManifest>(&json)
         .map_err(|e| format!("Invalid manifest.json: {e}"))
 }
 
 // â"€â"€ Tauri commands â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-const MARKETPLACE_CATALOG_URL: &str = "https://dl.supers0ft.us/gdlvlreqbot/marketplace/catalog";
 const LICENSE_KV_KEY: &str = "sys:license_token";
+
+fn mp_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MarketplaceMeResponse {
+    pub github_id:  i64,
+    pub username:   String,
+    pub is_sponsor: bool,
+    pub is_owner:   bool,
+    #[serde(default = "default_role")]
+    pub role:       String,
+}
+
+fn default_role() -> String { "user".into() }
+
+/// GET /me — returns account info including is_owner. Routed through Rust to avoid CORS issues.
+#[tauri::command]
+pub async fn fetch_marketplace_me(token: String) -> Result<MarketplaceMeResponse, String> {
+    let res = mp_client()?
+        .get(format!("{MARKETPLACE_BASE}/me"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send().await
+        .map_err(|e| format!("Marketplace /me failed: {e}"))?;
+    if !res.status().is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("Marketplace /me error: {body}"));
+    }
+    res.json::<MarketplaceMeResponse>().await
+        .map_err(|e| format!("Marketplace /me parse error: {e}"))
+}
+
+/// GET /admin/modules — returns all packages visible to this owner. Routed through Rust to avoid CORS.
+#[tauri::command]
+pub async fn fetch_marketplace_admin_list(token: String) -> Result<Vec<MarketplaceEntry>, String> {
+    let res = mp_client()?
+        .get(format!("{MARKETPLACE_BASE}/admin/modules"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send().await
+        .map_err(|e| format!("Admin list request failed: {e}"))?;
+    if !res.status().is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("Admin list error: {body}"));
+    }
+    res.json::<Vec<MarketplaceEntry>>().await
+        .map_err(|e| format!("Admin list parse error: {e}"))
+}
 
 /// Returns the full marketplace catalog from the live API.
 /// Returns an error if the marketplace is unreachable.
 #[tauri::command]
 pub async fn fetch_marketplace(
     modules: State<'_, Arc<ModuleState>>,
+    sort: Option<String>,
+    category: Option<String>,
+    q: Option<String>,
 ) -> Result<Vec<MarketplaceEntry>, String> {
     let installed_ids: std::collections::HashSet<String> = modules
         .list_modules().await
@@ -146,11 +521,18 @@ pub async fn fetch_marketplace(
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut req = client.get(MARKETPLACE_CATALOG_URL);
+    let mut req = client.get(format!("{MARKETPLACE_BASE}/catalog"));
     if let Some(tok) = &token {
         req = req
             .header("Authorization", format!("Bearer {tok}"))
             .query(&[("_token", tok.as_str())]);
+    }
+    let mut query: Vec<(&str, String)> = Vec::new();
+    if let Some(s) = sort.filter(|s| !s.is_empty()) { query.push(("sort", s)); }
+    if let Some(c) = category.filter(|c| !c.is_empty()) { query.push(("category", c)); }
+    if let Some(term) = q.filter(|q| !q.is_empty()) { query.push(("q", term)); }
+    if !query.is_empty() {
+        req = req.query(&query);
     }
     let resp = req.send().await
         .map_err(|e| format!("Marketplace unavailable: {e}"))?;
@@ -168,7 +550,18 @@ pub async fn fetch_marketplace(
     Ok(catalog)
 }
 
+/// Emit a structured install-progress event to the frontend.
+fn emit_progress(app: &AppHandle, id: &str, state: &str, message: Option<&str>) {
+    let mut v = serde_json::json!({ "id": id, "state": state });
+    if let Some(msg) = message {
+        v["message"] = serde_json::Value::String(msg.to_string());
+    }
+    app.emit("marketplace-install-progress", v).ok();
+}
+
 /// Install a module from the marketplace by catalog ID.
+/// Fetches entry metadata from /catalog/{id} (fresh, single-entry), downloads
+/// the release file, installs it, then records the install event on the server.
 #[tauri::command]
 pub async fn install_marketplace_module(
     id: String,
@@ -184,38 +577,55 @@ pub async fn install_marketplace_module(
             .ok()
             .flatten()
     };
+
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent(format!("GDLQBot/{APP_VERSION}"))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut req = client.get(MARKETPLACE_CATALOG_URL);
+
+    // Fetch just this entry from /catalog/{id} — fresh download URL, no full-catalog round-trip
+    emit_progress(&app_handle, &id, "resolving", None);
+    let detail_url = format!("{MARKETPLACE_BASE}/catalog/{id}");
+    let mut req = client.get(&detail_url);
     if let Some(tok) = &token {
-        req = req
-            .header("Authorization", format!("Bearer {tok}"))
-            .query(&[("_token", tok.as_str())]);
+        req = req.header("Authorization", format!("Bearer {tok}"));
     }
-    let catalog: Vec<MarketplaceEntry> = req.send().await
-        .map_err(|e| format!("Marketplace fetch failed: {e}"))?
-        .json().await
+    let resp = req.send().await
+        .map_err(|e| format!("Marketplace unavailable: {e}"))?;
+    if !resp.status().is_success() {
+        emit_progress(&app_handle, &id, "error", Some("Package not found in marketplace"));
+        return Err(format!("Package '{id}' not found in marketplace ({})", resp.status()));
+    }
+    let entry: MarketplaceEntry = resp.json().await
         .map_err(|e| format!("Marketplace response invalid: {e}"))?;
-    let entry = catalog.into_iter()
-        .find(|e| e.id == id)
-        .ok_or_else(|| format!("Module '{id}' not found in marketplace"))?;
 
     // Version compatibility check
     check_version_compat(&entry.min_app_version)?;
 
     // â"€â"€ Library install path â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    // ── GitHub source: resolve and install from raw repo files ────────────────
+    if entry.source_type == "github" {
+        return install_from_github(&entry, &id, &modules, &app_handle, &client, token.as_deref()).await;
+    }
+
+    // Guard: direct source must have a URL
+    if entry.download_url.is_empty() {
+        let msg = "No download URL configured for this release";
+        emit_progress(&app_handle, &id, "error", Some(msg));
+        return Err(format!("Package '{id}' has no download URL — contact the package author."));
+    }
+
     // -- Library install path
     if entry.package_type == "library" {
         let components: HashMap<String, String> = {
-            // Download the .gdlib package and read all component .rhai files
-            let bytes = reqwest::get(&entry.download_url)
+            emit_progress(&app_handle, &id, "downloading", Some(&format!("Downloading {}…", entry.name)));
+            let resp = client.get(&entry.download_url)
+                .send()
                 .await
-                .map_err(|e| format!("Download failed: {e}"))?
-                .bytes()
-                .await
-                .map_err(|e| format!("Failed to read download: {e}"))?;
+                .map_err(|e| format!("Download failed: {e}"))?;
+            let bytes = download_capped(resp).await?;
+            verify_checksum(&bytes, &entry.checksum, &id)?;
 
             let manifest_val: serde_json::Value = {
                 let cursor = std::io::Cursor::new(&bytes);
@@ -283,17 +693,20 @@ pub async fn install_marketplace_module(
         }
 
         app_handle.emit("library-updated", &id).ok();
+        emit_progress(&app_handle, &id, "done", None);
+        record_install(&client, &id, token.as_deref()).await;
         return Ok(());
     }
 
     // -- Package (.gdpck) install path: multi-library bundle
     if entry.package_type == "package" {
-        let bytes = reqwest::get(&entry.download_url)
+        emit_progress(&app_handle, &id, "downloading", Some(&format!("Downloading {}…", entry.name)));
+        let resp = client.get(&entry.download_url)
+            .send()
             .await
-            .map_err(|e| format!("Download failed: {e}"))?
-            .bytes()
-            .await
-            .map_err(|e| format!("Failed to read download: {e}"))?;
+            .map_err(|e| format!("Download failed: {e}"))?;
+        let bytes = download_capped(resp).await?;
+        verify_checksum(&bytes, &entry.checksum, &id)?;
 
         // Read bundle manifest to get library list
         let lib_ids: Vec<String> = {
@@ -312,46 +725,297 @@ pub async fn install_marketplace_module(
                 .unwrap_or_default()
         };
 
-        if lib_ids.is_empty() {
-            return Err("Bundle manifest has no 'libraries' list".to_string());
+        let installed_libs = install_gdpck_bytes_inner(&bytes, &modules, &app_handle).await?;
+        let lib_ids = if installed_libs.is_empty() { lib_ids } else { installed_libs };
+        {
+            let pool = modules.db.read().await;
+            record_installed_package(&pool, &id, &entry.version, &lib_ids).await;
         }
-
-        install_gdpck_bytes_inner(&bytes, &modules, &app_handle).await?;
+        emit_progress(&app_handle, &id, "done", None);
+        record_install(&client, &id, token.as_deref()).await;
         return Ok(());
     }
 
     // â"€â"€ Module install path â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     let modules_dir = modules.modules_dir.clone();
 
-    // Download and extract the .gdmod package
-    let bytes = reqwest::get(&entry.download_url)
+    emit_progress(&app_handle, &id, "downloading", Some(&format!("Downloading {}…", entry.name)));
+    let resp = client.get(&entry.download_url)
+        .send()
         .await
-        .map_err(|e| format!("Download failed: {e}"))?
-        .bytes()
-        .await
-        .map_err(|e| format!("Failed to read download: {e}"))?;
+        .map_err(|e| format!("Download failed: {e}"))?;
+    let bytes = download_capped(resp).await?;
+    verify_checksum(&bytes, &entry.checksum, &id)?;
 
+    emit_progress(&app_handle, &id, "installing", None);
     let dest_dir = modules_dir
-        .join(&entry.author)
-        .join(&entry.package_type)
-        .join(&entry.id);
+        .join(safe_path_component(&entry.author)?)
+        .join(safe_path_component(&entry.package_type)?)
+        .join(safe_path_component(&entry.id)?);
     let manifest = extract_gdmod(&bytes, &dest_dir)?;
     let manifest_json = serde_json::to_string(&manifest)
         .map_err(|e| format!("Failed to serialise manifest: {e}"))?;
 
     modules.install_module(&manifest_json, &entry.author, &entry.package_type).await.map_err(|e| e.to_string())?;
 
+    // Install libraries bundled inside the module package
+    if !manifest.bundle.libraries.is_empty() {
+        emit_progress(&app_handle, &id, "installing", Some("Installing bundled libraries…"));
+        if let Err(e) = modules.install_bundled_libraries(&manifest.id).await {
+            tracing::warn!("Bundled library install warning: {e}");
+        }
+        app_handle.emit("library-updated", &id).ok();
+    }
+
     app_handle.emit("module-updated", &id).ok();
+    emit_progress(&app_handle, &id, "done", None);
+    record_install(&client, &id, token.as_deref()).await;
     Ok(())
 }
 
+/// Install a package whose release is served via the GitHub dist tree.
+///
+/// Expected layout in the repo:
+///   `{github_dir}/{version}/manifest.json`   ← dist manifest (written by build.py)
+///   `{github_dir}/{version}/{file}`           ← built artifact (.gdmod / .gdpck)
+///
+/// `github_tag` may be a git tag to pin to a specific commit; when empty the
+/// repo's default branch is used.
+async fn install_from_github(
+    entry: &MarketplaceEntry,
+    id: &str,
+    modules: &Arc<ModuleState>,
+    app_handle: &AppHandle,
+    client: &reqwest::Client,
+    token: Option<&str>,
+) -> Result<(), String> {
+    use sha2::{Sha256, Digest};
+
+    let repo = entry.github_repo.trim();
+    let dir  = entry.github_dir.trim();
+    let tag  = entry.github_tag.trim();
+
+    if repo.is_empty() {
+        emit_progress(app_handle, id, "error", Some("No GitHub repo configured"));
+        return Err(format!("Package '{id}' has no GitHub repository configured"));
+    }
+
+    emit_progress(app_handle, id, "resolving", Some("Resolving from GitHub…"));
+
+    // Resolve git ref: explicit tag → refs/tags/{tag}; else use HEAD (repo default branch).
+    // Avoids an extra GitHub API round-trip and sidesteps unauthenticated rate limits.
+    let gh_ref: String = if !tag.is_empty() {
+        format!("refs/tags/{tag}")
+    } else {
+        "HEAD".to_string()
+    };
+
+    // Base URL for this version's dist directory.
+    // `github_dir` is the full path to the versioned dist folder
+    // (e.g. "dist/level-queue/2.0.0") — no need to append the version again.
+    let dir_clean = dir.trim_matches('/');
+    let version_base = if dir_clean.is_empty() {
+        format!("https://raw.githubusercontent.com/{repo}/{gh_ref}/")
+    } else {
+        format!("https://raw.githubusercontent.com/{repo}/{gh_ref}/{dir_clean}/")
+    };
+
+    // Fetch the dist manifest — tells us the artifact filename and checksum.
+    let manifest_resp = client
+        .get(format!("{version_base}manifest.json"))
+        .header("User-Agent", format!("GDLQBot/{APP_VERSION}"))
+        .send().await
+        .map_err(|e| format!("Failed to fetch dist manifest from GitHub: {e}"))?;
+    if !manifest_resp.status().is_success() {
+        let status = manifest_resp.status();
+        emit_progress(app_handle, id, "error", Some("Dist manifest not found on GitHub"));
+        return Err(format!(
+            "Dist manifest not found for '{id}' ({status}). \
+             Expected: {version_base}manifest.json"
+        ));
+    }
+    let dist_manifest: serde_json::Value = manifest_resp
+        .json().await
+        .map_err(|e| format!("Dist manifest is not valid JSON: {e}"))?;
+
+    let file = dist_manifest["file"].as_str()
+        .ok_or_else(|| format!("Dist manifest for '{id}' is missing 'file' field"))?
+        .to_string();
+    let pkg_type          = dist_manifest["package_type"].as_str()
+        .unwrap_or(&entry.package_type)
+        .to_string();
+    let expected_checksum = dist_manifest["checksum"].as_str().unwrap_or("").to_string();
+
+    // Prevent path traversal in the filename returned by the manifest.
+    if file.contains('/') || file.contains("..") {
+        return Err(format!("Dist manifest for '{id}' has invalid 'file' value: '{file}'"));
+    }
+
+    // Download the built artifact.
+    emit_progress(app_handle, id, "downloading", Some(&format!("Downloading {}…", entry.name)));
+    let artifact_resp = client
+        .get(format!("{version_base}{file}"))
+        .header("User-Agent", format!("GDLQBot/{APP_VERSION}"))
+        .send().await
+        .map_err(|e| format!("Download failed: {e}"))?;
+    if !artifact_resp.status().is_success() {
+        let status = artifact_resp.status();
+        emit_progress(app_handle, id, "error", Some("Artifact not found on GitHub"));
+        return Err(format!(
+            "Artifact '{file}' not found for '{id}' ({status}). \
+             Expected: {version_base}{file}"
+        ));
+    }
+    let bytes = download_capped(artifact_resp).await?;
+
+    // Verify SHA-256 checksum when the manifest provides one.
+    if !expected_checksum.is_empty() {
+        let actual = hex::encode(Sha256::digest(&bytes));
+        if actual != expected_checksum {
+            let msg = format!("Checksum mismatch for '{id}': expected {expected_checksum}, got {actual}");
+            emit_progress(app_handle, id, "error", Some("Checksum mismatch"));
+            return Err(msg);
+        }
+    }
+
+    // Install — same paths as a direct download.
+    emit_progress(app_handle, id, "installing", None);
+    match pkg_type.as_str() {
+        "package" => {
+            let lib_ids = install_gdpck_bytes_inner(&bytes, modules, app_handle).await?;
+            let pool = modules.db.read().await;
+            record_installed_package(&pool, id, &entry.version, &lib_ids).await;
+        }
+        _ => {
+            // module (libraries embedded in .gdmod are handled by extract_gdmod)
+            let dest_dir = modules.modules_dir.join("marketplace").join("module").join(safe_path_component(id)?);
+            let manifest = extract_gdmod(&bytes, &dest_dir)?;
+            let manifest_json = serde_json::to_string(&manifest).map_err(|e| e.to_string())?;
+            modules.install_module(&manifest_json, "marketplace", "module").await
+                .map_err(|e| e.to_string())?;
+            app_handle.emit("module-updated", id).ok();
+        }
+    }
+
+    emit_progress(app_handle, id, "done", None);
+    record_install(client, id, token).await;
+    Ok(())
+}
+
+/// Non-fatal: record an install event on the marketplace server (for download counts).
+async fn record_install(client: &reqwest::Client, id: &str, token: Option<&str>) {
+    let url = format!("{MARKETPLACE_BASE}/install/{id}");
+    let mut req = client.post(&url);
+    if let Some(tok) = token {
+        req = req.header("Authorization", format!("Bearer {tok}"));
+    }
+    req.send().await.ok();
+}
+
+// ── Installed-package tracking (kv_store) ────────────────────────────────────
+
+const PKG_KV_PREFIX: &str = "pkg:installed:";
+
+/// Write (or overwrite) the installed-package record so the frontend knows
+/// which library names belong to a given package ID.
+async fn record_installed_package(
+    pool: &sqlx::SqlitePool,
+    pkg_id: &str,
+    version: &str,
+    lib_ids: &[String],
+) {
+    let key   = format!("{PKG_KV_PREFIX}{pkg_id}");
+    let value = serde_json::json!({ "version": version, "libs": lib_ids }).to_string();
+    sqlx::query(
+        "INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, unixepoch())
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+    )
+    .bind(&key)
+    .bind(&value)
+    .execute(pool)
+    .await
+    .ok();
+}
+
+/// Return all package records written by `record_installed_package`.
+#[tauri::command]
+pub async fn get_installed_packages(
+    modules: State<'_, Arc<ModuleState>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let pool = modules.db.read().await;
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM kv_store WHERE key LIKE ?"
+    )
+    .bind(format!("{PKG_KV_PREFIX}%"))
+    .fetch_all(&*pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows.into_iter().filter_map(|(key, value)| {
+        let id = key.strip_prefix(PKG_KV_PREFIX)?.to_string();
+        let mut v: serde_json::Value = serde_json::from_str(&value).ok()?;
+        v["id"] = serde_json::Value::String(id);
+        Some(v)
+    }).collect())
+}
+
+/// Remove a previously installed package: deletes its constituent libraries
+/// (those not marked is_stdlib) and removes the kv tracking record.
+#[tauri::command]
+pub async fn uninstall_package(
+    id: String,
+    modules: State<'_, Arc<ModuleState>>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let pool = modules.db.read().await;
+    let key  = format!("{PKG_KV_PREFIX}{id}");
+
+    let record: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM kv_store WHERE key = ?"
+    )
+    .bind(&key)
+    .fetch_optional(&*pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some(json) = record {
+        let v: serde_json::Value = serde_json::from_str(&json)
+            .map_err(|e| format!("Corrupt package record: {e}"))?;
+        let lib_ids: Vec<String> = v.get("libs")
+            .and_then(|a| a.as_array())
+            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        for lib in &lib_ids {
+            sqlx::query("DELETE FROM libraries WHERE name = ? AND is_stdlib = 0")
+                .bind(lib)
+                .execute(&*pool)
+                .await
+                .map_err(|e| format!("Failed to remove library '{lib}': {e}"))?;
+        }
+    }
+
+    sqlx::query("DELETE FROM kv_store WHERE key = ?")
+        .bind(&key)
+        .execute(&*pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    drop(pool);
+    app_handle.emit("library-updated", &id).ok();
+    Ok(())
+}
+
+// ── .gdpck installation ───────────────────────────────────────────────────────
+
 /// Shared: install a .gdpck bundle from raw bytes.
 /// Handles libraries/<id>/, modules/<id>/, and packages/<id>/ subfolders recursively.
+/// Returns the list of library IDs that were installed so callers can record them.
 async fn install_gdpck_bytes_inner(
     bytes: &[u8],
     modules: &Arc<ModuleState>,
     app_handle: &AppHandle,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     // Read root manifest
     let root_manifest: serde_json::Value = {
         let cursor = std::io::Cursor::new(bytes);
@@ -369,6 +1033,8 @@ async fn install_gdpck_bytes_inner(
             .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
             .unwrap_or_default()
     }
+
+    let mut all_lib_ids: Vec<String> = Vec::new();
 
     // Install libraries from libraries/<lib_id>/
     let lib_ids = str_list(&root_manifest, "libraries");
@@ -412,46 +1078,46 @@ async fn install_gdpck_bytes_inner(
                     .map_err(|e| format!("Failed to update library '{lib_id}': {e}"))?;
             }
         }
+        all_lib_ids.extend(lib_ids.iter().cloned());
         app_handle.emit("library-updated", ()).ok();
     }
 
     // Install modules from modules/<mod_id>/
     let mod_ids = str_list(&root_manifest, "modules");
     for mod_id in &mod_ids {
-        let mod_manifest_str = {
-            let cursor = std::io::Cursor::new(bytes);
-            let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
-            let path = format!("modules/{mod_id}/manifest.json");
-            let mut f = archive.by_name(&path).map_err(|_| format!("Bundle missing {path}"))?;
-            let mut s = String::new();
-            f.read_to_string(&mut s).map_err(|e| e.to_string())?;
-            s
-        };
+        let mod_manifest_str = read_bundled_module_manifest(bytes, mod_id)?;
         let mod_manifest: ModuleManifest = serde_json::from_str(&mod_manifest_str)
             .map_err(|e| format!("Invalid module manifest for '{mod_id}': {e}"))?;
 
         // Extract module files to disk
-        let dest_dir = modules.modules_dir.join("marketplace").join("module").join(mod_id);
+        let dest_dir = modules.modules_dir.join("marketplace").join("module").join(safe_path_component(mod_id)?);
         std::fs::create_dir_all(&dest_dir).map_err(|e| format!("Could not create dir: {e}"))?;
         std::fs::write(dest_dir.join("manifest.json"), &mod_manifest_str)
             .map_err(|e| format!("Failed to write manifest: {e}"))?;
 
-        // Extract scripts/
+        // Extract scripts/, ui/, and resources/ sub-folders
         let cursor = std::io::Cursor::new(bytes);
         let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
-        let scripts_prefix = format!("modules/{mod_id}/scripts/");
+        let mod_prefix = format!("modules/{mod_id}/");
+        let allowed_prefixes = ["scripts/", "ui/", "resources/"];
         let names: Vec<String> = (0..archive.len())
             .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
-            .filter(|n| n.starts_with(&scripts_prefix) && !n.ends_with('/'))
+            .filter(|n| {
+                if !n.starts_with(&mod_prefix) || n.ends_with('/') { return false; }
+                let rel = &n[mod_prefix.len()..];
+                allowed_prefixes.iter().any(|p| rel.starts_with(p))
+            })
             .collect();
+        if names.len() > MAX_ZIP_ENTRIES {
+            return Err(format!("Module '{mod_id}' has too many files ({}, max {MAX_ZIP_ENTRIES})", names.len()));
+        }
         for name in names {
             let mut archive2 = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
             let mut f = archive2.by_name(&name).map_err(|e| e.to_string())?;
-            let rel = name.trim_start_matches(&format!("modules/{mod_id}/"));
+            let rel = name.trim_start_matches(&mod_prefix);
             let dest = dest_dir.join(rel);
             if let Some(p) = dest.parent() { std::fs::create_dir_all(p).ok(); }
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            let buf = read_zip_entry_capped(&mut f, &name)?;
             std::fs::write(&dest, &buf).map_err(|e| format!("Failed to write {rel}: {e}"))?;
         }
 
@@ -515,11 +1181,81 @@ async fn install_gdpck_bytes_inner(
                         .map_err(|e| format!("Failed to update nested library '{lib_id}': {e}"))?;
                 }
             }
+            all_lib_ids.extend(nested_libs.iter().cloned());
             app_handle.emit("library-updated", ()).ok();
         }
     }
 
-    Ok(())
+    Ok(all_lib_ids)
+}
+
+// ── File-association open flow (in-app confirmation) ─────────────────────────
+//
+// A .gdmod/.gdpck/.gdlib file opened via the OS file association is queued in
+// PendingOpenedFile (lib.rs) rather than acted on immediately — see that
+// type's doc comment for why. The frontend calls peek_pending_opened_file on
+// mount and on the "opened-file-pending" event; if it returns Ready, the
+// frontend shows an in-app confirmation modal with this info before calling
+// install_pending_opened_file.
+
+#[derive(Serialize)]
+#[serde(tag = "status")]
+pub enum PendingFileInfo {
+    NotSupported,
+    Ready {
+        path: String,
+        name: String,
+        id: String,
+        version: String,
+        author: String,
+        package_type: String,
+        description: String,
+    },
+}
+
+/// Takes the queued opened-file path (if any) and, when developer options are
+/// enabled, peeks its manifest for a confirmation summary. Returns `None`
+/// when nothing is queued — callers should treat that as "do nothing", not
+/// an error. Errors here mean a file *was* queued but wasn't readable/valid;
+/// the frontend surfaces those distinctly from `NotSupported`.
+#[tauri::command]
+pub async fn peek_pending_opened_file(
+    app_handle: AppHandle,
+    pending: State<'_, Arc<crate::PendingOpenedFile>>,
+) -> Result<Option<PendingFileInfo>, String> {
+    let path = pending.0.lock().await.take();
+    let Some(path) = path else { return Ok(None) };
+
+    if !crate::commands::install_info::is_dev_install(app_handle) {
+        return Ok(Some(PendingFileInfo::NotSupported));
+    }
+
+    let bytes = std::fs::read(&path).map_err(|e| format!("Could not read file: {e}"))?;
+    let manifest_str = read_root_manifest_str(&bytes)?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_str)
+        .map_err(|e| format!("Invalid manifest.json: {e}"))?;
+
+    let get = |k: &str, default: &str| manifest.get(k).and_then(|v| v.as_str()).unwrap_or(default).to_string();
+    Ok(Some(PendingFileInfo::Ready {
+        path: path.to_string_lossy().into_owned(),
+        name: get("name", "(unnamed)"),
+        id: get("id", "?"),
+        version: get("version", "?"),
+        author: get("author", ""),
+        package_type: get("package_type", "module"),
+        description: get("description", ""),
+    }))
+}
+
+/// Installs a package the user confirmed via the modal above.
+#[tauri::command]
+pub async fn install_pending_opened_file(
+    path: String,
+    modules: State<'_, Arc<ModuleState>>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("Could not read file: {e}"))?;
+    install_local_package_inner(bytes, modules.inner(), &app_handle).await
 }
 
 /// Install a local package file (.gdmod, .gdlib, or .gdpck) from bytes read by the frontend.
@@ -530,15 +1266,19 @@ pub async fn install_local_package(
     modules: State<'_, Arc<ModuleState>>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
+    install_local_package_inner(bytes, modules.inner(), &app_handle).await
+}
+
+/// Shared implementation used by both the Tauri command above and the
+/// file-association open handler in lib.rs.
+pub async fn install_local_package_inner(
+    bytes: Vec<u8>,
+    modules: &Arc<ModuleState>,
+    app_handle: &AppHandle,
+) -> Result<(), String> {
     let root_manifest: serde_json::Value = {
-        let cursor = std::io::Cursor::new(&bytes);
-        let mut archive = zip::ZipArchive::new(cursor)
-            .map_err(|e| format!("Not a valid package file: {e}"))?;
-        let mut f = archive.by_name("manifest.json")
-            .map_err(|_| "Package is missing manifest.json".to_string())?;
-        let mut s = String::new();
-        f.read_to_string(&mut s).map_err(|e| e.to_string())?;
-        serde_json::from_str(&s).map_err(|e| format!("Invalid manifest.json: {e}"))?
+        let manifest_str = read_root_manifest_str(&bytes)?;
+        serde_json::from_str(&manifest_str).map_err(|e| format!("Invalid manifest.json: {e}"))?
     };
 
     let pkg_type = root_manifest.get("package_type").and_then(|v| v.as_str()).unwrap_or("module");
@@ -584,7 +1324,8 @@ pub async fn install_local_package(
             app_handle.emit("library-updated", lib_id).ok();
         }
         "package" => {
-            install_gdpck_bytes_inner(&bytes, modules.inner(), &app_handle).await?;
+            install_gdpck_bytes_inner(&bytes, modules, app_handle).await?;
+            // Local packages aren't tracked in installed_packages (no catalog ID available).
         }
         _ => {
             // module
@@ -592,7 +1333,7 @@ pub async fn install_local_package(
                 .ok_or("Module manifest missing 'id'")?.to_string();
             let typed: ModuleManifest = serde_json::from_value(root_manifest)
                 .map_err(|e| format!("Invalid module manifest: {e}"))?;
-            let dest_dir = modules.modules_dir.join("local").join("module").join(&id);
+            let dest_dir = modules.modules_dir.join("local").join("module").join(safe_path_component(&id)?);
             extract_gdmod(&bytes, &dest_dir)?;
             let final_json = serde_json::to_string(&typed).map_err(|e| e.to_string())?;
             modules.install_module(&final_json, "local", "module").await.map_err(|e| e.to_string())?;
@@ -610,17 +1351,7 @@ pub async fn install_gdmod_bytes(
     app_handle: AppHandle,
 ) -> Result<(), String> {
     // Peek at manifest to get the id first
-    let cursor = std::io::Cursor::new(&bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| format!("Invalid .gdmod file: {e}"))?;
-
-    let manifest_json = {
-        let mut f = archive.by_name("manifest.json")
-            .map_err(|_| "Package is missing manifest.json".to_string())?;
-        let mut s = String::new();
-        f.read_to_string(&mut s).map_err(|e| e.to_string())?;
-        s
-    };
+    let manifest_json = read_root_manifest_str(&bytes)?;
 
     let manifest: serde_json::Value = serde_json::from_str(&manifest_json)
         .map_err(|e| format!("Invalid manifest.json: {e}"))?;
@@ -638,30 +1369,62 @@ pub async fn install_gdmod_bytes(
     let typed: ModuleManifest = serde_json::from_str(&manifest_json)
         .map_err(|e| format!("Invalid manifest.json: {e}"))?;
 
-    let dest_dir = modules.modules_dir.join("local").join("module").join(&id);
+    let dest_dir = modules.modules_dir.join("local").join("module").join(safe_path_component(&id)?);
     extract_gdmod(&bytes, &dest_dir)?;
 
     let final_json = serde_json::to_string(&typed)
         .map_err(|e| format!("Failed to serialise manifest: {e}"))?;
 
     modules.install_module(&final_json, "local", "module").await.map_err(|e| e.to_string())?;
+    if let Err(e) = modules.install_bundled_libraries(&id).await {
+        tracing::warn!("Bundled library install warning: {e}");
+    }
     app_handle.emit("module-updated", &id).ok();
+    Ok(())
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        if src_path.is_dir() {
+            std::fs::create_dir_all(&dest_path)?;
+            copy_dir_recursive(&src_path, &dest_path)?;
+        } else {
+            std::fs::copy(&src_path, &dest_path)?;
+        }
+    }
     Ok(())
 }
 
 // â"€â"€ Developer tools â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 /// Install a module from a local source directory (no zip required).
-/// Reads manifest.json + scripts/ from the given directory and copies
+/// Reads manifest.json + all sub-directories from the given path and copies
 /// them directly into the app's modules directory. Intended for module
 /// development workflows where you edit files in your source tree.
+/// Returns the installed module ID.
 #[tauri::command]
 pub async fn install_module_from_dir(
     source_dir: String,
     modules: State<'_, Arc<ModuleState>>,
+    queue: State<'_, Arc<QueueState>>,
     app_handle: AppHandle,
-) -> Result<(), String> {
-    let src = PathBuf::from(&source_dir);
+) -> Result<String, String> {
+    install_module_from_dir_inner(&source_dir, modules.inner(), queue.inner(), &app_handle).await
+}
+
+/// Shared implementation used by both the Tauri command and the dev HTTP API.
+pub async fn install_module_from_dir_inner(
+    source_dir: &str,
+    modules: &Arc<ModuleState>,
+    queue: &Arc<QueueState>,
+    app_handle: &AppHandle,
+) -> Result<String, String> {
+    let src = PathBuf::from(source_dir);
     let manifest_path = src.join("manifest.json");
     if !manifest_path.exists() {
         return Err(format!("No manifest.json found in {source_dir}"));
@@ -675,42 +1438,102 @@ pub async fn install_module_from_dir(
 
     check_version_compat(&manifest.min_app_version)?;
 
-    let dest_dir = modules.modules_dir.join("local").join("module").join(&manifest.id);
-    let scripts_dest = dest_dir.join("scripts");
-    std::fs::create_dir_all(&scripts_dest)
-        .map_err(|e| format!("Failed to create module directory: {e}"))?;
-
-    // Copy scripts
-    let scripts_src = src.join("scripts");
-    if scripts_src.is_dir() {
-        for entry in std::fs::read_dir(&scripts_src).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("rhai") {
-                let dest = scripts_dest.join(entry.file_name());
-                std::fs::copy(&path, &dest)
-                    .map_err(|e| format!("Failed to copy {}: {e}", entry.file_name().to_string_lossy()))?;
-            }
-        }
-    }
-
-    // Copy manifest
-    std::fs::copy(&manifest_path, dest_dir.join("manifest.json")).ok();
+    sync_module_dir_to_dest(&src, &modules.modules_dir.join("local").join("module").join(safe_path_component(&manifest.id)?))
+        .map_err(|e| format!("Failed to sync module files: {e}"))?;
 
     modules.install_module(&manifest_json, "local", "module").await.map_err(|e| e.to_string())?;
+    if let Err(e) = modules.install_bundled_libraries(&manifest.id).await {
+        tracing::warn!("Bundled library install warning: {e}");
+    }
+    app_handle.emit("library-updated", &manifest.id).ok();
     app_handle.emit("module-updated", &manifest.id).ok();
+    let mid = manifest.id.clone();
+    let mods = Arc::clone(modules);
+    let q    = Arc::clone(queue);
+    let ah   = app_handle.clone();
+    tokio::spawn(async move {
+        super::modules::run_scripts_preflight(&mid, &mods, &q, ah).await;
+    });
+    Ok(manifest.id)
+}
+
+/// Fully wipe the installed copy of a local/dev module and reinstall it fresh
+/// from `source_dir` — unlike the normal sync (used by `install_module_from_dir`
+/// and the dev-watch loop), which only ever adds/overwrites files, this also
+/// removes anything in the installed copy that no longer exists in source
+/// (a renamed/deleted script, say) instead of leaving it to linger forever.
+///
+/// Doesn't touch `bot_commands` — `install_module` upserts the manifest but
+/// never deletes command rows, so trigger/alias/listener customizations a
+/// user made on this module's commands survive a refresh.
+#[tauri::command]
+pub async fn hard_refresh_module(
+    source_dir: String,
+    modules:    State<'_, Arc<ModuleState>>,
+    queue:      State<'_, Arc<QueueState>>,
+    app_handle: AppHandle,
+) -> Result<String, String> {
+    let src = PathBuf::from(&source_dir);
+    let manifest_path = src.join("manifest.json");
+    if !manifest_path.exists() {
+        return Err(format!("No manifest.json found in {source_dir}"));
+    }
+    let manifest_json = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("Failed to read manifest.json: {e}"))?;
+    let manifest: ModuleManifest = serde_json::from_str(&manifest_json)
+        .map_err(|e| format!("Invalid manifest.json: {e}"))?;
+
+    // Wherever this module is ACTUALLY installed right now — not a hardcoded
+    // "local/module" guess. If it was ever installed some other way (seeded
+    // as a bundled/official module, installed from the marketplace, etc.),
+    // that guess would silently wipe+rebuild a phantom directory the running
+    // bot never reads from, while the real stale copy sat untouched. This is
+    // almost certainly why "hard refresh" didn't fix the stale-script reports.
+    let dest = modules.module_dir(&manifest.id).await;
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest).map_err(|e| format!("Failed to remove old install: {e}"))?;
+    }
+
+    // install_module_from_dir_inner writes the fresh copy to "local/module/<id>"
+    // and repoints the DB row's author/package_type to match in the same call,
+    // so this is self-consistent afterward even if the old install lived
+    // somewhere else — module_dir() will resolve there from now on.
+    install_module_from_dir_inner(&source_dir, modules.inner(), queue.inner(), &app_handle).await
+}
+
+/// Copy all known module sub-directories from `src` into `dest`, creating dirs as needed.
+fn sync_module_dir_to_dest(src: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    // Always copy manifest
+    let mp = src.join("manifest.json");
+    if mp.exists() { std::fs::copy(&mp, dest.join("manifest.json"))?; }
+    // Sub-directories to mirror
+    for sub in &["scripts", "ui", "resources", "libraries"] {
+        let sub_src = src.join(sub);
+        if !sub_src.is_dir() { continue; }
+        let sub_dest = dest.join(sub);
+        std::fs::create_dir_all(&sub_dest)?;
+        copy_dir_recursive(&sub_src, &sub_dest)?;
+    }
     Ok(())
 }
 
-/// Watch a local module source directory and copy changed scripts into
-/// the installed module directory as you save them (live reload for development).
-/// Emits `module-scripts-updated` events to the frontend on each change.
-/// Call `stop_module_dev_watch` with the same module ID to stop watching.
+/// Start watching a local module source directory for file changes and
+/// hot-reload the installed module whenever a file is saved.
+///
+/// - `.rhai` / `manifest.json` changes → re-registers scripts + emits `module-updated`
+/// - `libraries/` changes → re-installs bundled libraries + emits `library-updated`
+/// - Any change → emits `module-dev-reloaded` so the UI can show a refresh indicator
+///
+/// Only one watcher per module_id can be active at a time; starting a new one
+/// automatically stops any existing watcher for the same module.
 #[tauri::command]
 pub async fn start_module_dev_watch(
     module_id: String,
     source_dir: String,
     modules: State<'_, Arc<ModuleState>>,
+    registry: State<'_, Arc<DevWatchRegistry>>,
+    queue: State<'_, Arc<QueueState>>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
     let src = PathBuf::from(&source_dir);
@@ -719,61 +1542,237 @@ pub async fn start_module_dev_watch(
     }
 
     let dest_dir = modules.module_dir(&module_id).await;
-    let scripts_dest = dest_dir.join("scripts");
-    std::fs::create_dir_all(&scripts_dest).ok();
-
+    let modules_arc = Arc::clone(modules.inner());
+    let queue_arc   = Arc::clone(queue.inner());
     let handle = app_handle.clone();
     let id = module_id.clone();
+    let src_clone = src.clone();
 
-    tokio::spawn(async move {
-        let mut last_mtimes: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
-        let scripts_src = src.join("scripts");
-
-        // Initial copy + mtime snapshot
-        if let Ok(entries) = std::fs::read_dir(&scripts_src) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("rhai") {
-                    if let Ok(meta) = path.metadata() {
-                        if let Ok(mtime) = meta.modified() {
-                            last_mtimes.insert(path.clone(), mtime);
-                        }
-                    }
-                    let dest = scripts_dest.join(entry.file_name());
-                    std::fs::copy(&path, &dest).ok();
-                }
-            }
+    // Abort any existing watcher for this module
+    {
+        let mut inner = registry.inner.lock().await;
+        if let Some(old) = inner.remove(&module_id) {
+            old.handle.abort();
         }
+    }
 
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-            let mut changed = false;
-            if let Ok(entries) = std::fs::read_dir(&scripts_src) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) != Some("rhai") {
-                        continue;
-                    }
-                    if let Ok(meta) = path.metadata() {
-                        if let Ok(mtime) = meta.modified() {
-                            if last_mtimes.get(&path) != Some(&mtime) {
-                                let dest = scripts_dest.join(entry.file_name());
-                                if std::fs::copy(&path, &dest).is_ok() {
-                                    last_mtimes.insert(path, mtime);
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if changed {
-                handle.emit("module-scripts-updated", &id).ok();
-            }
-        }
+    let task_handle = tokio::spawn(async move {
+        dev_watch_loop(id, src_clone, dest_dir, modules_arc, queue_arc, handle).await;
     });
 
+    {
+        let mut inner = registry.inner.lock().await;
+        inner.insert(module_id.clone(), WatchEntry { source_dir: source_dir.clone(), handle: task_handle });
+    }
+
+    // Persist the watch so it survives app restarts
+    let pool = queue.db.read().await.clone();
+    sqlx::query("INSERT OR REPLACE INTO dev_watches (module_id, source_dir) VALUES (?, ?)")
+        .bind(&module_id)
+        .bind(&source_dir)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to persist dev watch: {e}"))?;
+
     Ok(())
+}
+
+/// Stop watching the given module and remove it from the registry and DB.
+#[tauri::command]
+pub async fn stop_module_dev_watch(
+    module_id: String,
+    registry: State<'_, Arc<DevWatchRegistry>>,
+    queue: State<'_, Arc<QueueState>>,
+) -> Result<(), String> {
+    {
+        let mut inner = registry.inner.lock().await;
+        if let Some(entry) = inner.remove(&module_id) {
+            entry.handle.abort();
+        }
+    }
+    let pool = queue.db.read().await.clone();
+    sqlx::query("DELETE FROM dev_watches WHERE module_id = ?")
+        .bind(&module_id)
+        .execute(&pool)
+        .await
+        .ok();
+    Ok(())
+}
+
+/// Restore all persisted dev watches from DB on startup. Call this once from the frontend.
+#[tauri::command]
+pub async fn restore_dev_watches(
+    modules: State<'_, Arc<ModuleState>>,
+    registry: State<'_, Arc<DevWatchRegistry>>,
+    queue: State<'_, Arc<QueueState>>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let pool = queue.db.read().await.clone();
+    let rows: Vec<(String, String)> = sqlx::query_as::<_, (String, String)>(
+        "SELECT module_id, source_dir FROM dev_watches"
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+
+    for (module_id, source_dir) in rows {
+        let src = PathBuf::from(&source_dir);
+        if !src.is_dir() {
+            // Source dir gone — clean up the DB entry
+            sqlx::query("DELETE FROM dev_watches WHERE module_id = ?")
+                .bind(&module_id)
+                .execute(&pool)
+                .await
+                .ok();
+            continue;
+        }
+
+        let dest_dir = modules.module_dir(&module_id).await;
+        let modules_arc = Arc::clone(modules.inner());
+        let queue_arc   = Arc::clone(queue.inner());
+        let handle = app_handle.clone();
+        let id = module_id.clone();
+        let src_clone = src.clone();
+
+        let task_handle = tokio::spawn(async move {
+            dev_watch_loop(id, src_clone, dest_dir, modules_arc, queue_arc, handle).await;
+        });
+
+        let mut inner = registry.inner.lock().await;
+        inner.insert(module_id, WatchEntry { source_dir, handle: task_handle });
+    }
+    Ok(())
+}
+
+/// List all currently active (not yet stopped or aborted) dev watches.
+#[tauri::command]
+pub async fn list_dev_watches(
+    registry: State<'_, Arc<DevWatchRegistry>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut inner = registry.inner.lock().await;
+    // Clean up any tasks that finished on their own
+    inner.retain(|_, e| !e.handle.is_finished());
+    Ok(inner.iter().map(|(id, e)| serde_json::json!({
+        "module_id":  id,
+        "source_dir": e.source_dir,
+    })).collect())
+}
+
+// ── Dev watcher internals ─────────────────────────────────────────────────────
+
+/// Background task: polls `src` every 600 ms and syncs changed files to `dest`.
+async fn dev_watch_loop(
+    module_id: String,
+    src: PathBuf,
+    dest: PathBuf,
+    modules: Arc<ModuleState>,
+    queue: Arc<QueueState>,
+    handle: AppHandle,
+) {
+    let mut mtimes: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
+
+    // Initial: full sync + reinstall so the installed copy is always up to date on watch start
+    collect_mtimes(&src, &mut mtimes);
+    let _ = sync_module_dir_to_dest(&src, &dest);
+    {
+        let manifest_path = dest.join("manifest.json");
+        if let Ok(json) = std::fs::read_to_string(&manifest_path) {
+            if let Ok(manifest) = serde_json::from_str::<ModuleManifest>(&json) {
+                let _ = modules.install_module(&json, "local", "module").await;
+                let _ = modules.install_bundled_libraries(&manifest.id).await;
+                handle.emit("library-updated", &manifest.id).ok();
+            }
+        }
+        handle.emit("module-updated", &module_id).ok();
+        // Run scripts as preflight on initial watch start — errors go to debug console
+        super::modules::run_scripts_preflight(&module_id, &modules, &queue, handle.clone()).await;
+    }
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+        let changed = detect_changes(&src, &mut mtimes);
+        if changed.is_empty() {
+            continue;
+        }
+
+        // Copy only the changed files to dest
+        for path in &changed {
+            if let Ok(rel) = path.strip_prefix(&src) {
+                let dest_path = dest.join(rel);
+                if let Some(p) = dest_path.parent() { std::fs::create_dir_all(p).ok(); }
+                std::fs::copy(path, &dest_path).ok();
+            }
+        }
+
+        let needs_reinstall = changed.iter().any(|p| {
+            p.file_name().map(|n| n == "manifest.json").unwrap_or(false)
+                || p.extension().map(|e| e == "rhai").unwrap_or(false)
+        });
+        let libs_changed = changed.iter().any(|p| {
+            p.components().any(|c| c.as_os_str() == "libraries")
+        });
+
+        if needs_reinstall {
+            let manifest_path = dest.join("manifest.json");
+            if let Ok(json) = std::fs::read_to_string(&manifest_path) {
+                if let Ok(manifest) = serde_json::from_str::<ModuleManifest>(&json) {
+                    let _ = modules.install_module(&json, "local", "module").await;
+                    if libs_changed {
+                        let _ = modules.install_bundled_libraries(&manifest.id).await;
+                        handle.emit("library-updated", &module_id).ok();
+                    }
+                }
+            }
+            handle.emit("module-updated", &module_id).ok();
+        } else if libs_changed {
+            let manifest_path = dest.join("manifest.json");
+            if let Ok(json) = std::fs::read_to_string(&manifest_path) {
+                if let Ok(manifest) = serde_json::from_str::<ModuleManifest>(&json) {
+                    let _ = modules.install_bundled_libraries(&manifest.id).await;
+                }
+            }
+            handle.emit("library-updated", &module_id).ok();
+        }
+
+        handle.emit("module-dev-reloaded", serde_json::json!({
+            "module_id": &module_id,
+            "files": changed.iter().filter_map(|p| p.file_name()?.to_str()).collect::<Vec<_>>(),
+        })).ok();
+
+        // Re-run preflight after every hot-reload — only emits if there are errors
+        super::modules::run_scripts_preflight(&module_id, &modules, &queue, handle.clone()).await;
+    }
+}
+
+/// Walk `src` recursively and snapshot all file mtimes into `map`.
+fn collect_mtimes(src: &Path, map: &mut HashMap<PathBuf, std::time::SystemTime>) {
+    if let Ok(entries) = std::fs::read_dir(src) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_mtimes(&path, map);
+            } else if let Ok(mtime) = path.metadata().and_then(|m| m.modified()) {
+                map.insert(path, mtime);
+            }
+        }
+    }
+}
+
+/// Compare current mtimes against `map`, update the map for changed files, return changed paths.
+fn detect_changes(
+    src: &Path,
+    map: &mut HashMap<PathBuf, std::time::SystemTime>,
+) -> Vec<PathBuf> {
+    let mut changed = Vec::new();
+    let mut current: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
+    collect_mtimes(src, &mut current);
+
+    for (path, mtime) in &current {
+        if map.get(path) != Some(mtime) {
+            changed.push(path.clone());
+            map.insert(path.clone(), *mtime);
+        }
+    }
+    changed
 }

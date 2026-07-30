@@ -1,0 +1,15 @@
+{
+  "name": "gdlqb-installer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/free-port.mjs 1430",
+    "dev": "tauri dev",
+    "build": "node build.mjs",
+    "build:fast": "node build.mjs --skip-app-build --debug"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

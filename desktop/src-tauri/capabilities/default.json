@@ -5,10 +5,12 @@
   "windows": [
     "main",
     "splashscreen",
-    "level-copy"
+    "level-copy",
+    "debug-console"
   ],
   "permissions": [
     "core:default",
-    "opener:default"
+    "opener:default",
+    "updater:default"
   ]
 }

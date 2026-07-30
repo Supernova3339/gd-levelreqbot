@@ -41,6 +41,12 @@ fn percent(f) {
     `${p}%`
 }
 
+fn percent_of(part, total) {
+    if total == 0 { return "0%"; }
+    let p = ((part.to_float() / total.to_float()) * 100.0).floor();
+    `${p}%`
+}
+
 fn bytes(n) {
     if n >= 1073741824 {
         let g = (n / 107374182).to_float() / 10.0;
@@ -95,7 +101,7 @@ fn truncate(s, max_len) {
 }
 
 fn title_case(s) {
-    let words = io.split(s, " ");
+    let words = s.split(" ");
     let out = [];
     for w in words {
         if w.len() == 0 { continue; }
@@ -104,4 +110,27 @@ fn title_case(s) {
         out.push(first + rest);
     }
     out.join(" ")
+}
+
+fn upper_first(s) {
+    if s.len() == 0 { return s; }
+    s.sub_string(0, 1).to_upper() + if s.len() > 1 { s.sub_string(1) } else { "" }
+}
+
+fn zero_pad(n, width) {
+    pad_left(`${n}`, width, "0")
+}
+
+fn sign_str(n) {
+    if n > 0 { `+${n}` } else { `${n}` }
+}
+
+fn pluralize(n, singular, plural) {
+    if n == 1 { `${n} ${singular}` } else { `${n} ${plural}` }
+}
+
+fn currency(n, symbol) {
+    let whole = n / 100; let cents = n % 100;
+    let cents_str = if cents < 10 { `0${cents}` } else { `${cents}` };
+    `${symbol}${whole}.${cents_str}`
 }

@@ -1,0 +1,75 @@
+-- Marketplace module catalog cache.
+-- Stores the last-fetched listing from the marketplace API
+-- so the Explore tab loads instantly without a network round-trip.
+CREATE TABLE IF NOT EXISTS marketplace_cache
+(
+    id
+    TEXT
+    PRIMARY
+    KEY,
+    name
+    TEXT
+    NOT
+    NULL,
+    author
+    TEXT
+    NOT
+    NULL,
+    description
+    TEXT
+    NOT
+    NULL
+    DEFAULT
+    '',
+    version
+    TEXT
+    NOT
+    NULL
+    DEFAULT
+    '1.0.0',
+    icon
+    TEXT
+    NOT
+    NULL
+    DEFAULT
+    'custom',
+    verified
+    INTEGER
+    NOT
+    NULL
+    DEFAULT
+    0,
+    premium
+    INTEGER
+    NOT
+    NULL
+    DEFAULT
+    0,
+    downloads
+    INTEGER
+    NOT
+    NULL
+    DEFAULT
+    0,
+    tags
+    TEXT
+    NOT
+    NULL
+    DEFAULT
+    '[]',
+    manifest
+    TEXT
+    NOT
+    NULL
+    DEFAULT
+    '{}',
+    fetched_at
+    TEXT
+    NOT
+    NULL
+    DEFAULT (
+    datetime
+(
+    'now'
+))
+    );

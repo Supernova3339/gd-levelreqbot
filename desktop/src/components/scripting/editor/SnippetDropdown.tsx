@@ -3,11 +3,15 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {createPortal} from "react-dom";
 import {computePosition, flip, offset, shift} from "@floating-ui/dom";
+import {type Availability, isAvailable, type ScriptContext} from "../../../lib/scripting/proxy-api";
 
 interface Snippet {
     label: string;
     category: string;
     body: string;
+    /** Only offered when the current script has this in scope — see proxy-api.ts.
+     *  Omit for snippets that only use always-available proxies. */
+    requires?: Availability;
 }
 
 const SNIPPETS: Snippet[] = [
@@ -40,7 +44,7 @@ const SNIPPETS: Snippet[] = [
     {
         category: "Guards",
         label: "Platform check",
-        body: `if platform == "twitch" {\n    // Twitch only\n} else if platform == "youtube" {\n    // YouTube only\n}`
+        body: `if user.platform == "twitch" {\n    // Twitch only\n} else if user.platform == "youtube" {\n    // YouTube only\n}`
     },
     // Control
     {
@@ -53,15 +57,17 @@ const SNIPPETS: Snippet[] = [
         label: "Random pick",
         body: `let msg = rand.pick(["Pog!", "GG!", "Hype!", "Let's go!"]);\nchat.say(msg);`
     },
-    // Queue
+    // Queue (legacy — custom commands only, not available in module scripts)
     {
         category: "Queue",
         label: "Queue add",
+        requires: "custom",
         body: `if args.len() == 0 {\n    chat.reply("Usage: !request <level ID>");\n    return;\n}\nif !gd.isValidId(args[0]) {\n    chat.reply("Invalid level ID.");\n    return;\n}\nlet result = queue.add(args[0]);\nchat.say(result);`
     },
     {
         category: "Queue",
         label: "Queue position",
+        requires: "custom",
         body: `if args.len() == 0 { chat.reply("Usage: !pos <level ID>"); return; }\nlet pos = queue.position(args[0]);\nif pos == 0 {\n    chat.reply("That level is not in the queue.");\n} else {\n    chat.reply(\`Your level is at position \${pos}.\`);\n}`
     },
     // GD
@@ -70,20 +76,35 @@ const SNIPPETS: Snippet[] = [
         label: "GD fetch level",
         body: `if args.len() == 0 { chat.reply("Provide a level ID."); return; }\nlet lvl = gd.fetch(args[0]);\nif lvl == () {\n    chat.reply("Level not found.");\n} else {\n    chat.say(\`\${lvl.name} by \${lvl.username} — \${lvl.stars}⭐ \${lvl.difficulty}\`);\n}`
     },
-    // Store / Data
+    // Storage — module store (ms) vs. legacy global store/data (custom commands only)
+    {
+        category: "Storage",
+        label: "ms counter",
+        requires: "module",
+        body: `let key = "my_counter";\nms.incr(key);\nchat.say(\`Count: \${ms.get(key)}\`);`
+    },
+    {
+        category: "Storage",
+        label: "ms collection insert",
+        requires: "module",
+        body: `ms.collection("entries").push(#{\n    user: user.name,\n    level: args[0],\n    ts: time.now()\n});\nchat.say("Saved!");`
+    },
     {
         category: "Storage",
         label: "Counter",
+        requires: "custom",
         body: `let key = "my_counter";\nstore.incr(key);\nchat.say(\`Count: \${store.get(key)}\`);`
     },
     {
         category: "Storage",
         label: "Store get/set",
+        requires: "custom",
         body: `let val = store.get_or("key", "0");\nstore.set("key", val);\nchat.say(\`Stored: \${val}\`);`
     },
     {
         category: "Storage",
         label: "Data insert",
+        requires: "custom",
         body: `data.insert("entries", #{\n    user: user.name,\n    level: args[0],\n    ts: time.now()\n});\nchat.say("Saved!");`
     },
     // Web
@@ -101,16 +122,20 @@ const SNIPPETS: Snippet[] = [
     {category: "Events", label: "Emit event", body: `event.emit("my-event", user.name);\nchat.say("Event fired!");`},
 ];
 
-const CATEGORIES = [...new Set(SNIPPETS.map((s) => s.category))];
-
 interface Props {
     onInsert: (text: string) => void;
+    scriptCtx: ScriptContext;
 }
 
-export function SnippetDropdown({onInsert}: Props) {
+export function SnippetDropdown({onInsert, scriptCtx}: Props) {
     const [open, setOpen] = useState(false);
     const [pos, setPos] = useState({top: -9999, left: -9999});
     const [category, setCategory] = useState<string | null>(null);
+
+    // Drop snippets that use proxies not in scope for this script (e.g. `queue.*`
+    // snippets in a module script) — an inserted snippet should always at least run.
+    const available = SNIPPETS.filter((s) => !s.requires || isAvailable(s.requires, scriptCtx));
+    const CATEGORIES = [...new Set(available.map((s) => s.category))];
     const btnRef = useRef<HTMLButtonElement>(null);
     const menuRef = useRef<HTMLDivElement | null>(null);
     const cancelPos = useRef(false);
@@ -153,8 +178,8 @@ export function SnippetDropdown({onInsert}: Props) {
     }, [open]);
 
     const visible = category
-        ? SNIPPETS.filter((s) => s.category === category)
-        : SNIPPETS;
+        ? available.filter((s) => s.category === category)
+        : available;
 
     return (
         <>

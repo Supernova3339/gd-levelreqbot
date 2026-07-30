@@ -105,14 +105,28 @@ async fn run_server(port: u16, secret: String, ws: Arc<WsState>) -> Result<()> {
 #[derive(Deserialize)]
 struct WsQuery { token: Option<String> }
 
+/// Constant-time byte comparison — deliberately doesn't short-circuit on the
+/// first mismatch, so comparison time doesn't leak how many bytes matched.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() { return false; }
+    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 async fn ws_handler(
     ws:                  WebSocketUpgrade,
     AxumState(state):    AxumState<ServerState>,
     Query(q):            Query<WsQuery>,
 ) -> impl IntoResponse {
     // If a secret is configured, require it as a ?token= query param.
+    // Compared in constant time — this gate gets attempted across a network
+    // (OBS/companion-app source, LAN), so a naive != comparison would leak
+    // timing information about how many leading bytes of the secret matched.
     if !state.secret.is_empty() {
-        if q.token.as_deref() != Some(state.secret.as_str()) {
+        let matches = match q.token.as_deref() {
+            Some(t) => constant_time_eq(t.as_bytes(), state.secret.as_bytes()),
+            None    => false,
+        };
+        if !matches {
             return axum::response::Response::builder()
                 .status(401)
                 .body(axum::body::Body::from("Unauthorized"))

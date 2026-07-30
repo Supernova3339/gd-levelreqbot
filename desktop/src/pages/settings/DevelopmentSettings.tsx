@@ -3,8 +3,17 @@ import {listen} from "@tauri-apps/api/event";
 import {invoke} from "@tauri-apps/api/core";
 import {PERF_EVENT, PERF_KEY} from "../../components/PerfOverlay";
 import {DEVTOOLS_EVENT, DEVTOOLS_KEY_EXPORT} from "../../components/ContextMenu";
-import {getLicenseToken} from "../../lib/commands";
-import {installLocalPackage} from "../../lib/commands";
+import type {DevWatch} from "../../lib/commands";
+import {
+    getLicenseToken,
+    hardRefreshModule,
+    installLocalPackage,
+    installModuleFromDir,
+    listDevWatches,
+    pickDirectory,
+    startModuleDevWatch,
+    stopModuleDevWatch
+} from "../../lib/commands";
 
 async function setDevLogging(enabled: boolean): Promise<void> {
     return invoke("set_dev_logging", {enabled});
@@ -141,7 +150,114 @@ export function DevelopmentSettings() {
         }
     };
 
+    // ── Dev watches ───────────────────────────────────────────────────────────
+    const [watches, setWatches] = useState<DevWatch[]>([]);
+    const [watchAdding, setWatchAdding] = useState(false);
+    const [watchError, setWatchError] = useState<string | null>(null);
+    const [reloadedIds, setReloadedIds] = useState<Record<string, number>>({});
+    const [refreshingId, setRefreshingId] = useState<string | null>(null);
+
+    const refreshWatches = async () => {
+        try {
+            setWatches(await listDevWatches());
+        } catch { /* ignore */
+        }
+    };
+
+    useEffect(() => {
+        refreshWatches();
+    }, []);
+
+    useEffect(() => {
+        const unlisten = listen<{ module_id: string; files: string[] }>("module-dev-reloaded", (e) => {
+            const id = e.payload.module_id;
+            setReloadedIds(prev => ({...prev, [id]: Date.now()}));
+        });
+        return () => {
+            unlisten.then(f => f());
+        };
+    }, []);
+
+    const handleAddWatch = async () => {
+        setWatchError(null);
+        const dir = await pickDirectory();
+        if (!dir) return;
+        setWatchAdding(true);
+        try {
+            const moduleId = await installModuleFromDir(dir);
+            await startModuleDevWatch(moduleId, dir);
+            await refreshWatches();
+        } catch (err) {
+            setWatchError(String(err));
+        } finally {
+            setWatchAdding(false);
+        }
+    };
+
+    const handleStopWatch = async (moduleId: string) => {
+        try {
+            await stopModuleDevWatch(moduleId);
+            setReloadedIds(prev => {
+                const n = {...prev};
+                delete n[moduleId];
+                return n;
+            });
+            await refreshWatches();
+        } catch { /* ignore */
+        }
+    };
+
+    // Unlike the watch's own auto-sync (which only adds/overwrites files),
+    // this wipes the installed copy first — fixes both "edited a file and it
+    // didn't take" and "renamed/deleted a file and the old one lingers".
+    const handleHardRefresh = async (moduleId: string, sourceDir: string) => {
+        setWatchError(null);
+        setRefreshingId(moduleId);
+        try {
+            await hardRefreshModule(sourceDir);
+            setReloadedIds(prev => ({...prev, [moduleId]: Date.now()}));
+        } catch (err) {
+            setWatchError(String(err));
+        } finally {
+            setRefreshingId(null);
+        }
+    };
+
     const [restarting, setRestarting] = useState(false);
+
+    // ── CLI PATH install ───────────────────────────────────────────────────────
+    // const [cliStatus, setCliStatus]   = useState<CliInstallResult | null>(null);
+    // const [cliWorking, setCliWorking] = useState(false);
+    // const [cliMsg, setCliMsg]         = useState<{ ok: boolean; text: string } | null>(null);
+    //
+    // useEffect(() => {
+    //     cliInstallStatus().then(setCliStatus).catch(() => {});
+    // }, []);
+    //
+    // const handleCliInstall = async () => {
+    //     setCliWorking(true); setCliMsg(null);
+    //     try {
+    //         const result = await installCliToPath();
+    //         setCliStatus(result);
+    //         setCliMsg(result.already_in_path
+    //             ? { ok: true, text: "Already in PATH — no changes needed." }
+    //             : { ok: true, text: "Added to PATH. Open a new terminal and run: gdlqbcli --help" });
+    //     } catch (e) {
+    //         setCliMsg({ ok: false, text: String(e) });
+    //     } finally { setCliWorking(false); }
+    // };
+    //
+    // const handleCliUninstall = async () => {
+    //     setCliWorking(true); setCliMsg(null);
+    //     try {
+    //         await uninstallCliFromPath();
+    //         const result = await cliInstallStatus();
+    //         setCliStatus(result);
+    //         setCliMsg({ ok: true, text: "Removed from PATH." });
+    //     } catch (e) {
+    //         setCliMsg({ ok: false, text: String(e) });
+    //     } finally { setCliWorking(false); }
+    // };
 
     const handleRestart = async () => {
         setRestarting(true);
@@ -177,6 +293,64 @@ export function DevelopmentSettings() {
                     {restarting ? "Restarting…" : "↺ Restart"}
                 </button>
             </div>
+
+            {/* Developer CLI */}
+            {/*<div className="p-3 rounded-lg" style={{backgroundColor: "#111", border: `1px solid ${cliStatus?.installed ? "#22c55e44" : "#2a2a2a"}`}}>*/}
+            {/*    <div className="flex items-start justify-between gap-4 mb-2">*/}
+            {/*        <div>*/}
+            {/*            <p className="text-sm font-medium" style={{color: "#f1f1f1"}}>*/}
+            {/*                Developer CLI*/}
+            {/*                {cliStatus?.installed && (*/}
+            {/*                    <span className="text-xs ml-2" style={{color: "#22c55e"}}>in PATH</span>*/}
+            {/*                )}*/}
+            {/*            </p>*/}
+            {/*            <p className="text-xs mt-0.5" style={{color: "#555"}}>*/}
+            {/*                Adds <code style={{color: "#888"}}>gdlqbcli</code> to your system PATH so you can run*/}
+            {/*                {" "}<code style={{color: "#888"}}>gdlqbcli build</code>,{" "}*/}
+            {/*                <code style={{color: "#888"}}>gdlqbcli watch</code>, and other commands from any terminal.*/}
+            {/*            </p>*/}
+            {/*        </div>*/}
+            {/*        <div className="flex gap-2 flex-shrink-0">*/}
+            {/*            <button onClick={handleCliInstall}*/}
+            {/*                disabled={cliWorking || cliStatus?.installed || cliStatus?.binary_found === false}*/}
+            {/*                className="px-3 py-1.5 text-xs font-medium rounded"*/}
+            {/*                style={{*/}
+            {/*                    backgroundColor: "#1a2a1a",*/}
+            {/*                    color: (cliWorking || cliStatus?.installed || cliStatus?.binary_found === false) ? "#333" : "#4ade80",*/}
+            {/*                    border: "1px solid #22c55e22",*/}
+            {/*                    cursor: (cliWorking || cliStatus?.installed || cliStatus?.binary_found === false) ? "not-allowed" : "pointer",*/}
+            {/*                }}>*/}
+            {/*                Add to PATH*/}
+            {/*            </button>*/}
+            {/*            <button onClick={handleCliUninstall}*/}
+            {/*                disabled={cliWorking || !cliStatus?.installed}*/}
+            {/*                className="px-3 py-1.5 text-xs font-medium rounded"*/}
+            {/*                style={{*/}
+            {/*                    backgroundColor: "#1a0a0a",*/}
+            {/*                    color: (cliWorking || !cliStatus?.installed) ? "#333" : "#ef4444",*/}
+            {/*                    border: "1px solid #ef444411",*/}
+            {/*                    cursor: (cliWorking || !cliStatus?.installed) ? "not-allowed" : "pointer",*/}
+            {/*                }}>*/}
+            {/*                Remove from PATH*/}
+            {/*            </button>*/}
+            {/*        </div>*/}
+            {/*    </div>*/}
+            {/*    {cliStatus?.dir && (*/}
+            {/*        <p className="text-xs mb-1" style={{color: "#444", fontFamily: "monospace", wordBreak: "break-all"}}>*/}
+            {/*            {cliStatus.dir}*/}
+            {/*        </p>*/}
+            {/*    )}*/}
+            {/*    {cliStatus?.binary_found === false && (*/}
+            {/*        <p className="text-xs" style={{color: "#f59e0b"}}>*/}
+            {/*            <code>gdlqbcli</code> not found — run <code>cargo build -p gdlqbot-cli</code> first, or install the app via <code>cargo tauri build</code>.*/}
+            {/*        </p>*/}
+            {/*    )}*/}
+            {/*    {cliMsg && (*/}
+            {/*        <p className="text-xs mt-1" style={{color: cliMsg.ok ? "#22c55e" : "#ef4444"}}>*/}
+            {/*            {cliMsg.text}*/}
+            {/*        </p>*/}
+            {/*    )}*/}
+            {/*</div>*/}
 
             {/* Marketplace token */}
             <div className="p-3 rounded-lg" style={{backgroundColor: "#111", border: "1px solid #2a2a2a"}}>
@@ -237,6 +411,80 @@ export function DevelopmentSettings() {
                     <p className="text-xs mt-2" style={{color: pkgResult.ok ? "#22c55e" : "#ef4444"}}>
                         {pkgResult.msg}
                     </p>
+                )}
+            </div>
+
+            {/* Dev watches */}
+            <div className="p-3 rounded-lg" style={{backgroundColor: "#111", border: "1px solid #2a2a2a"}}>
+                <div className="flex items-center justify-between mb-2">
+                    <div>
+                        <p className="text-sm font-medium" style={{color: "#f1f1f1"}}>Hot-reload watches</p>
+                        <p className="text-xs mt-0.5" style={{color: "#555"}}>
+                            Pick a module source directory — the app auto-reinstalls it when files change.
+                        </p>
+                    </div>
+                    <button
+                        onClick={handleAddWatch}
+                        disabled={watchAdding}
+                        className="px-3 py-1.5 text-xs font-medium rounded flex-shrink-0 ml-4"
+                        style={{
+                            backgroundColor: "#1a2a1a", color: watchAdding ? "#444" : "#4ade80",
+                            border: "1px solid #22c55e44", cursor: watchAdding ? "not-allowed" : "pointer",
+                        }}>
+                        {watchAdding ? "Adding…" : "+ Add directory"}
+                    </button>
+                </div>
+                {watchError && (
+                    <p className="text-xs mb-2" style={{color: "#ef4444"}}>{watchError}</p>
+                )}
+                {watches.length === 0 ? (
+                    <p className="text-xs py-2 text-center" style={{color: "#333"}}>No active watches.</p>
+                ) : (
+                    <div className="flex flex-col gap-1.5 mt-2">
+                        {watches.map(w => {
+                            const lastReload = reloadedIds[w.module_id];
+                            return (
+                                <div key={w.module_id}
+                                     className="flex items-center gap-2 px-2 py-1.5 rounded"
+                                     style={{backgroundColor: "#0d0d0d", border: "1px solid #1e1e1e"}}>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-xs font-medium truncate"
+                                           style={{color: "#c0c0c0"}}>{w.module_id}</p>
+                                        <p className="text-xs truncate"
+                                           style={{color: "#444", fontFamily: "monospace"}}>{w.source_dir}</p>
+                                    </div>
+                                    {lastReload && (
+                                        <span className="text-xs flex-shrink-0" style={{color: "#22c55e"}}>
+                                            reloaded {new Date(lastReload).toLocaleTimeString()}
+                                        </span>
+                                    )}
+                                    <button
+                                        onClick={() => handleHardRefresh(w.module_id, w.source_dir)}
+                                        disabled={refreshingId === w.module_id}
+                                        title="Fully delete and reinstall from source — fixes stale files the normal watch sync missed"
+                                        className="text-xs px-2 py-1 rounded flex-shrink-0"
+                                        style={{
+                                            backgroundColor: "#1a1a2a",
+                                            color: refreshingId === w.module_id ? "#444" : "#a5b4fc",
+                                            border: "1px solid #6366f144",
+                                            cursor: refreshingId === w.module_id ? "not-allowed" : "pointer",
+                                        }}>
+                                        {refreshingId === w.module_id ? "Refreshing…" : "↻ Hard refresh"}
+                                    </button>
+                                    <button
+                                        onClick={() => handleStopWatch(w.module_id)}
+                                        className="text-xs px-2 py-1 rounded flex-shrink-0"
+                                        style={{
+                                            backgroundColor: "#1a0a0a",
+                                            color: "#ef4444",
+                                            border: "1px solid #ef444422"
+                                        }}>
+                                        Stop
+                                    </button>
+                                </div>
+                            );
+                        })}
+                    </div>
                 )}
             </div>
 

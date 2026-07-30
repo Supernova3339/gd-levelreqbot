@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>GD API Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #111;
+            color: #eee;
+            padding: 2rem;
+            max-width: 520px;
+        }
+
+        input {
+            display: block;
+            margin: 0.4rem 0 1rem;
+            padding: 0.4rem 0.6rem;
+            background: #222;
+            color: #eee;
+            border: 1px solid #444;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        button {
+            padding: 0.4rem 1.2rem;
+            background: #333;
+            color: #eee;
+            border: 1px solid #555;
+            cursor: pointer;
+        }
+
+        label {
+            font-size: 0.82rem;
+            color: #aaa;
+        }
+
+        h2 {
+            border-bottom: 1px solid #333;
+            padding-bottom: 0.4rem;
+            margin-top: 2rem;
+        }
+
+        .result {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            background: #0a0a0a;
+            border: 1px solid #2a2a2a;
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-size: 0.8rem;
+            min-height: 2rem;
+            color: #6ee7b7;
+        }
+
+        .err {
+            color: #f87171;
+        }
+
+        .note {
+            font-size: 0.75rem;
+            color: #555;
+            margin: 0.3rem 0 0.8rem;
+        }
+    </style>
+</head>
+<body>
+
+<h2>1. getGJUserList20 (friend list)</h2>
+<p class="note">Requires your accountID + password. If this returns data, the connection and GJP2 are both correct.</p>
+<label>Account ID</label>
+<input type="text" id="ul_acid" placeholder="e.g. 71">
+<label>Password</label>
+<input type="password" id="ul_pass">
+<button onclick="testUserList()">Fetch</button>
+<div class="result" id="ul_out">—</div>
+
+<h2>2. loginGJAccount — raw <code>password</code> param</h2>
+<p class="note">Old approach: sends the plain password directly.</p>
+<label>Username</label>
+<input type="text" id="lp_user" autocomplete="off">
+<label>Password</label>
+<input type="password" id="lp_pass">
+<button onclick="testLoginRaw()">Submit</button>
+<div class="result" id="lp_out">—</div>
+
+<h2>3. loginGJAccount — computed <code>gjp2</code></h2>
+<p class="note">Current app approach: SHA1(password + "mI29fmAnxgTs") sent as gjp2.</p>
+<label>Username</label>
+<input type="text" id="lg_user" autocomplete="off">
+<label>Password</label>
+<input type="password" id="lg_pass">
+<button onclick="testLoginGJP2()">Submit</button>
+<div class="result" id="lg_out">—</div>
+
+<script>
+    async function sha1Hex(str) {
+        const buf = new TextEncoder().encode(str);
+        const hash = await crypto.subtle.digest("SHA-1", buf);
+        return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    const PROXY = "http://localhost:8765";
+
+    const BASE = {
+        gameVersion: "22",
+        binaryVersion: "47",
+        udid: crypto.randomUUID(),
+    };
+
+    async function post(url, params, outId) {
+        const out = document.getElementById(outId);
+        out.textContent = "sending…";
+        out.className = "result";
+        try {
+            const merged = {...BASE, ...params};
+            const body = new URLSearchParams(merged).toString();
+            out.textContent = `sending: ${body}\n\n…`;
+            const res = await fetch(url, {
+                method: "POST",
+                headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                body,
+            });
+            const text = await res.text();
+            out.textContent = `HTTP ${res.status}\n\n${text}`;
+        } catch (e) {
+            out.textContent = `ERROR: ${e.message}`;
+            out.className = "result err";
+        }
+    }
+
+    async function testUserList() {
+        const acid = document.getElementById("ul_acid").value.trim();
+        const pass = document.getElementById("ul_pass").value;
+        if (!acid || !pass) {
+            alert("Fill in both fields");
+            return;
+        }
+        const gjp2 = await sha1Hex(pass + "mI29fmAnxgTs");
+        await post(`${PROXY}/database/getGJUserList20.php`, {
+            accountID: acid, gjp2, type: "0", secret: "Wmfd2893gb7",
+        }, "ul_out");
+    }
+
+    async function testLoginRaw() {
+        const user = document.getElementById("lp_user").value.trim();
+        const pass = document.getElementById("lp_pass").value;
+        if (!user || !pass) {
+            alert("Fill in both fields");
+            return;
+        }
+        await post(`${PROXY}/database/accounts/loginGJAccount.php`, {
+            userName: user, password: pass, secret: "Wmfv3899gc9",
+        }, "lp_out");
+    }
+
+    async function testLoginGJP2() {
+        const user = document.getElementById("lg_user").value.trim();
+        const pass = document.getElementById("lg_pass").value;
+        if (!user || !pass) {
+            alert("Fill in both fields");
+            return;
+        }
+        const gjp2 = await sha1Hex(pass + "mI29fmAnxgTs");
+        await post(`${PROXY}/database/accounts/loginGJAccount.php`, {
+            userName: user, gjp2, secret: "Wmfv3899gc9",
+        }, "lg_out");
+    }
+</script>
+
+</body>
+</html>

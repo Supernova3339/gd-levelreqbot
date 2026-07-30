@@ -2,6 +2,11 @@
 // Rhai script file.  Rhai treats them as plain comments; we parse them to
 // populate DB columns (trigger, aliases, description, roles, etc.).
 
+export interface DirectiveListener {
+    type: "twitch_redemption" | "event";
+    config: string;
+}
+
 export interface Directive {
     trigger?: string;
     aliases?: string[];
@@ -11,6 +16,12 @@ export interface Directive {
     cooldown?: number;
     user_cooldown?: number;
     editor?: "text" | "visual";  // locked editor mode for this command
+    /** Off lets the command exist purely as a listener, invisible to chat. */
+    chatEnabled?: boolean;
+    /** Zero or more additional ways this command can fire, independent of
+     *  (and in addition to) the chat trigger — a Twitch redemption, an
+     *  internal event name (from `event.emit()`), or several of either. */
+    listeners?: DirectiveListener[];
 }
 
 const ROLE_TO_DB: Record<string, string> = {
@@ -64,13 +75,28 @@ export function parseDirectives(text: string): Directive {
             case "editor":
                 d.editor = v === "visual" ? "visual" : "text";
                 break;
+            case "chat":
+                d.chatEnabled = v !== "false";
+                break;
+            case "listener": {
+                // "<type> <rest of line is config>" — space-split so a config
+                // value (a reward title, say) can itself contain punctuation
+                // like ':' without ambiguity.
+                const sp = v.indexOf(" ");
+                const type = (sp === -1 ? v : v.slice(0, sp)) as DirectiveListener["type"];
+                const config = sp === -1 ? "" : v.slice(sp + 1);
+                if (type === "twitch_redemption" || type === "event") {
+                    d.listeners = [...(d.listeners ?? []), {type, config}];
+                }
+                break;
+            }
         }
     }
     return d;
 }
 
 export function serializeDirectives(d: Directive): string {
-    return [
+    const lines = [
         `// @trigger ${d.trigger ?? ""}`,
         `// @alias ${(d.aliases ?? []).join(", ")}`,
         `// @description ${d.description ?? ""}`,
@@ -78,14 +104,28 @@ export function serializeDirectives(d: Directive): string {
         `// @platform ${d.platform ?? "all"}`,
         `// @cooldown ${d.cooldown ?? 0}`,
         `// @user_cooldown ${d.user_cooldown ?? 0}`,
-    ].join("\n");
+        `// @chat ${d.chatEnabled === false ? "false" : "true"}`,
+    ];
+    for (const l of d.listeners ?? []) {
+        lines.push(`// @listener ${l.type} ${l.config}`);
+    }
+    return lines.join("\n");
 }
 
-/** Strip all `// @` directive lines, return the remaining Rhai body. */
+// `// @lock` / `// @unlock` (lockRegions.ts) share this file's `// @word`
+// directive shape but aren't directives — they're code-region markers that
+// need to survive into the body text, or lock-detection never sees them
+// (this was a real bug: enforcement reads the raw file directly and worked
+// fine, but every UI signal derived from getBodyText() — the visual strip,
+// the frontend pre-save check — silently had nothing to find).
+const NON_DIRECTIVE_AT_LINES = new Set(["// @lock", "// @unlock"]);
+
+/** Strip all `// @` directive lines, return the remaining Rhai body. Leaves
+ *  `// @lock` / `// @unlock` markers in place — see NON_DIRECTIVE_AT_LINES. */
 export function getBodyText(text: string): string {
     return text
         .split("\n")
-        .filter((line) => !/^\s*\/\/\s*@/.test(line))
+        .filter((line) => NON_DIRECTIVE_AT_LINES.has(line.trim()) || !/^\s*\/\/\s*@/.test(line))
         .join("\n")
         .trim();
 }

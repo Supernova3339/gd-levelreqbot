@@ -21,7 +21,10 @@ fn exec(cmd: &str, timeout_secs: u64) -> String {
 
     thread::spawn(move || {
         #[cfg(target_os = "windows")]
-        let result = ShellCommand::new("cmd").args(["/C", &cmd]).output();
+        let result = {
+            use std::os::windows::process::CommandExt;
+            ShellCommand::new("cmd").args(["/C", &cmd]).creation_flags(0x08000000).output()
+        };
         #[cfg(not(target_os = "windows"))]
         let result = ShellCommand::new("sh").args(["-c", &cmd]).output();
         let _ = tx.send(result);

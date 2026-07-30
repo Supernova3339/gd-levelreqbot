@@ -1,20 +1,7 @@
-// str.rhai — string utilities (wraps the io proxy for parsing; adds text helpers)
+// str.rhai — string utilities
 
-/// Parse a string to integer. Returns () if not a valid integer.
-fn parse_int(s) { io.parse_int(`${s}`) }
-
-/// Parse a string to float. Returns () if not a valid number.
-fn parse_float(s) { io.parse_float(`${s}`) }
-
-/// Returns true if the string can be parsed as a number.
-fn is_number(s) {
-    let s = `${s}`.trim();
-    io.parse_int(s) != () || io.parse_float(s) != ()
-}
-
-/// Split a string into non-empty whitespace-separated words.
 fn words(s) {
-    let parts = io.split(s.trim(), " ");
+    let parts = s.trim().split(" ");
     let out = [];
     for p in parts {
         let p = p.trim();
@@ -23,10 +10,10 @@ fn words(s) {
     out
 }
 
-/// Split a string into lines.
-fn lines(s) { io.split(s, "\n") }
+fn lines(s) {
+    s.split("\n")
+}
 
-/// Left-pad a string to `width` characters using `ch`.
 fn pad_left(s, width, ch) {
     let s = `${s}`; let n = width - s.len();
     if n <= 0 { return s; }
@@ -35,7 +22,6 @@ fn pad_left(s, width, ch) {
     pad + s
 }
 
-/// Right-pad a string to `width` characters using `ch`.
 fn pad_right(s, width, ch) {
     let s = `${s}`; let n = width - s.len();
     if n <= 0 { return s; }
@@ -44,14 +30,12 @@ fn pad_right(s, width, ch) {
     s + pad
 }
 
-/// Truncate to `max_len` characters, appending "..." if cut.
 fn truncate(s, max_len) {
     if s.len() <= max_len { return s; }
     let cut = if max_len > 3 { max_len - 3 } else { max_len };
     s.sub_string(0, cut) + "..."
 }
 
-/// Truncate with a custom suffix.
 fn truncate_with(s, max_len, suffix) {
     if s.len() <= max_len { return s; }
     let cut = max_len - suffix.len();
@@ -59,9 +43,74 @@ fn truncate_with(s, max_len, suffix) {
     s.sub_string(0, cut) + suffix
 }
 
-/// Repeat a string n times.
 fn repeat(s, n) {
     let out = ""; let i = 0;
     while i < n { out += s; i += 1; }
     out
+}
+
+fn count_occurrences(s, sub) {
+    if sub.len() == 0 { return 0; }
+    let count = 0;
+    let parts = s.split(sub);
+    parts.len() - 1
+}
+
+fn capitalize(s) {
+    if s.len() == 0 { return s; }
+    s.sub_string(0, 1).to_upper() + s.sub_string(1).to_lower()
+}
+
+fn reverse_str(s) {
+    let chars = s.chars();
+    let out = ""; let i = chars.len() - 1;
+    while i >= 0 { out += chars[i]; i -= 1; }
+    out
+}
+
+fn starts_with_any(s, prefixes) {
+    for p in prefixes { if s.starts_with(p) { return true; } }
+    false
+}
+
+fn ends_with_any(s, suffixes) {
+    for suf in suffixes { if s.ends_with(suf) { return true; } }
+    false
+}
+
+fn strip_prefix(s, prefix) {
+    if s.starts_with(prefix) { s.sub_string(prefix.len()) } else { s }
+}
+
+fn strip_suffix(s, suffix) {
+    if s.ends_with(suffix) { s.sub_string(0, s.len() - suffix.len()) } else { s }
+}
+
+fn indent(s, prefix) {
+    let ls = s.split("\n");
+    let out = [];
+    for l in ls { out.push(prefix + l); }
+    out.join("\n")
+}
+
+fn is_blank(s) {
+    s.trim().len() == 0
+}
+
+fn between(s, open, close) {
+    let start = s.index_of(open);
+    if start < 0 { return ""; }
+    let inner_start = start + open.len();
+    let end = s.index_of(close);
+    if end <= inner_start { return ""; }
+    s.sub_string(inner_start, end - inner_start)
+}
+
+fn center(s, width, ch) {
+    let s = `${s}`; let gap = width - s.len();
+    if gap <= 0 { return s; }
+    let left = gap / 2; let right = gap - left;
+    let l = ""; let i = 0; while i < left  { l += ch; i += 1; }
+    let r = ""; let i = 0; while i < right { r += ch; i += 1; }
+    l + s + r
 }

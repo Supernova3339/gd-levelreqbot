@@ -1,0 +1,4 @@
+ALTER TABLE config
+    ADD COLUMN gd_icon_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE config
+    ADD COLUMN gd_icon_b64 TEXT NOT NULL DEFAULT '';

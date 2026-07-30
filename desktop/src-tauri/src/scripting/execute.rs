@@ -11,7 +11,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rhai::AST;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tracing::error;
 
 use super::context::{ScriptCtx, ScriptOutput};
@@ -22,7 +22,7 @@ use super::proxy::{
     store::StoreProxy, data::DataProxy, db::DbProxy,
     gd::GdProxy, rand::RandProxy, time::TimeProxy,
     event::EventProxy, web::WebProxy, io::IoProxy, shell::ShellProxy,
-    module_store::ModuleStoreProxy,
+    module_store::ModuleStoreProxy, twitch::TwitchProxy, youtube::YouTubeProxy,
 };
 
 // ─── AST cache ────────────────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ pub async fn run_script(
     ctx:        &ScriptCtx<'_>,
     app_handle: AppHandle,
 ) -> Vec<String> {
-    run_script_inner(script, ctx, app_handle, false).await.output
+    run_script_inner(script, ctx, app_handle, true).await.output
 }
 
 pub async fn run_script_full(
@@ -81,11 +81,22 @@ pub async fn run_script_full(
     run_script_inner(script, ctx, app_handle, true).await
 }
 
+/// Like `run_script_full` but suppresses `bot-runtime-error` event emission.
+/// Use for panel data evaluation where errors are expected (e.g. unset state vars)
+/// and should not appear in the console.
+pub async fn run_script_eval(
+    script:     &str,
+    ctx:        &ScriptCtx<'_>,
+    app_handle: AppHandle,
+) -> RunResult {
+    run_script_inner(script, ctx, app_handle, false).await
+}
+
 async fn run_script_inner(
     script:      &str,
     ctx:         &ScriptCtx<'_>,
     app_handle:  AppHandle,
-    capture_err: bool,
+    emit_errors: bool,
 ) -> RunResult {
     let output:  ScriptOutput = Arc::new(Mutex::new(Vec::new()));
     let console: ScriptOutput = Arc::new(Mutex::new(Vec::new()));
@@ -110,6 +121,8 @@ async fn run_script_inner(
         scope.push("chat", ChatProxy {
             output:   Arc::clone(&output_ref),
             username: ctx.msg.username.clone(),
+            platform: ctx.platform.clone(),
+            twitch:   ctx.twitch.clone(),
         });
         scope.push("console", ConsoleProxy {
             output:          Arc::clone(&console_ref),
@@ -119,13 +132,35 @@ async fn run_script_inner(
         scope.push("user",  UserProxy::from_msg(ctx.msg));
         scope.push("rand",  RandProxy::new());
         scope.push("time",  TimeProxy);
-        scope.push("event", EventProxy { app_handle: app_handle.clone() });
-        scope.push("web",   WebProxy);
+        scope.push("event", EventProxy {
+            app_handle: app_handle.clone(),
+            module_id: ctx.module_id.clone(),
+            chain: ctx.event_chain.clone(),
+        });
         scope.push("io",    IoProxy);
 
         // Module store: injected when running a module's script
         if let Some(ref mid) = ctx.module_id {
             scope.push("ms", ModuleStoreProxy::new(mid.clone(), ctx.queue.clone()));
+        }
+
+        // GD proxy: available to all scripts (including module panel data expressions)
+        scope.push("gd", GdProxy);
+
+        // Twitch/YouTube proxies: available to all scripts, same as `gd`. Both degrade
+        // gracefully (unit/false) when the bot isn't connected on that platform.
+        scope.push("twitch", TwitchProxy { bot: ctx.twitch.clone() });
+        scope.push("youtube", YouTubeProxy { bot: ctx.youtube.clone() });
+
+        // `web` is intentionally NOT given to module scripts (see stock-scripts
+        // policy: modules only ever get ms/chat/user/event/time/rand/io) — a
+        // marketplace module is third-party code, and unrestricted outbound
+        // HTTP from it is an SSRF/exfiltration vector (attacker-controlled
+        // module could read local network services or phone home with data
+        // pulled from `ms`/`chat`). Only the streamer's own trusted
+        // command/library scripts get it.
+        if !is_module_script {
+            scope.push("web", WebProxy);
         }
 
         // Legacy proxies — only for non-module scripts (backward compat)
@@ -144,20 +179,29 @@ async fn run_script_inner(
             scope.push("store", StoreProxy { queue: ctx.queue.clone() });
             scope.push("data",  DataProxy  { queue: ctx.queue.clone() });
             scope.push("db",    DbProxy    { queue: ctx.queue.clone() });
-            scope.push("gd",    GdProxy);
             scope.push("username",   ctx.msg.username.clone());
             scope.push("platform",   ctx.platform.clone());
             scope.push("sub_mode",   ctx.sub_mode);
             scope.push("queue_size", ctx.queue_size);
         }
 
-        // Shell proxy is only injected when explicitly enabled in script settings
-        if shell_enabled {
+        // Shell proxy is only injected when explicitly enabled in script settings,
+        // and NEVER for module scripts — shell_enabled is a global setting the
+        // streamer flips on for their OWN command scripts; it must not also
+        // hand raw process-execution to third-party marketplace module code
+        // they never reviewed line-by-line.
+        if shell_enabled && !is_module_script {
             scope.push("shell", ShellProxy);
         }
 
         // ── Primitive context variables (always available) ─────────────────
         scope.push("command_trigger", ctx.command_trigger.clone());
+
+        // Empty string (not unit) when this run wasn't triggered by a
+        // redemption — keeps scripts simple (`if redemption_id != ""`)
+        // without needing to handle an optional/unit type in Rhai.
+        scope.push("redemption_id", ctx.redemption_id.clone().unwrap_or_default());
+        scope.push("reward_id", ctx.reward_id.clone().unwrap_or_default());
 
         // args as a Rhai array so scripts can do args[0], args.len(), etc.
         let args_vec: Vec<rhai::Dynamic> = ctx.args.iter()
@@ -179,10 +223,8 @@ async fn run_script_inner(
             Ok(ast) => ast,
             Err(e) => {
                 let msg = format!("Compile error: {e}");
-                error!("{msg}");
-                if capture_err {
-                    errors_ref.lock().unwrap().push(msg);
-                }
+                if emit_errors { error!("{msg}"); } else { tracing::debug!("{msg}"); }
+                errors_ref.lock().unwrap().push(msg);
                 return Ok(());
             }
         };
@@ -194,10 +236,8 @@ async fn run_script_inner(
 
     if let Err(e) = result {
         let msg = format!("Runtime error: {e}");
-        error!("{msg}");
-        if capture_err {
-            errors.lock().unwrap().push(msg);
-        }
+        if emit_errors { error!("{msg}"); } else { tracing::debug!("{msg}"); }
+        errors.lock().unwrap().push(msg);
     }
 
     let output_lines = match Arc::try_unwrap(output) {
@@ -212,6 +252,23 @@ async fn run_script_inner(
         Ok(m)    => m.into_inner().unwrap_or_default(),
         Err(arc) => arc.lock().unwrap().clone(),
     };
+
+    // Emit script errors to the debug console window (fire-and-forget)
+    if emit_errors {
+        for err in &error_lines {
+            #[derive(serde::Serialize, Clone)]
+            struct RuntimeError<'a> {
+                message: &'a str,
+                file: Option<&'a str>,
+                command: &'a str,
+            }
+            app_handle.emit("bot-runtime-error", RuntimeError {
+                message: err,
+                file: ctx.script_file.as_deref(),
+                command: &ctx.command_trigger,
+            }).ok();
+        }
+    }
 
     RunResult { output: output_lines, console: console_lines, errors: error_lines, elapsed_ms }
 }

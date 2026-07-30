@@ -1,7 +1,9 @@
 // Command settings panel — replaces raw // @directive lines with a clean UI.
 
 import {useRef, useState} from "react";
-import type {Directive} from "../../../lib/scripting/directives";
+import type {Directive, DirectiveListener} from "../../../lib/scripting/directives";
+import {TwitchRewardPicker} from "../../TwitchRewardPicker";
+import {EventListenerPicker} from "../../EventListenerPicker";
 
 const OPEN_KEY = "gdlqbot.directive_panel_open";
 
@@ -129,6 +131,65 @@ function NumberStepper({value, onChange, min = 0, disabled}: {
                     }}>
                 +
             </button>
+        </div>
+    );
+}
+
+// One row in the repeatable listener list — a type selector plus whichever
+// config picker matches it.
+function ListenerRow({listener, readOnly, onChange, onRemove}: {
+    listener: DirectiveListener;
+    readOnly?: boolean;
+    onChange: (l: DirectiveListener) => void;
+    onRemove: () => void;
+}) {
+    return (
+        <div style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            padding: 8,
+            borderRadius: 6,
+            backgroundColor: "#0a0a0a",
+            border: "1px solid #1a1a1a"
+        }}>
+            <div className="flex items-center gap-2">
+                <div style={{display: "flex", gap: 3}}>
+                    {([
+                        ["twitch_redemption", "Twitch redemption"],
+                        ["event", "Internal event"],
+                    ] as const).map(([val, label]) => (
+                        <SegmentButton key={val}
+                                       label={label}
+                                       active={listener.type === val}
+                                       disabled={readOnly}
+                                       onClick={() => !readOnly && onChange({
+                                           type: val,
+                                           config: listener.type === val ? listener.config : ""
+                                       })}
+                        />
+                    ))}
+                </div>
+                {!readOnly && (
+                    <button onClick={onRemove} className="text-xs ml-auto"
+                            style={{color: "#333", background: "none", border: "none", cursor: "pointer"}}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.color = "#f87171";
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.color = "#333";
+                            }}>
+                        Remove
+                    </button>
+                )}
+            </div>
+            {listener.type === "twitch_redemption" ? (
+                <TwitchRewardPicker value={listener.config} disabled={readOnly}
+                                    onChange={(title) => onChange({...listener, config: title})}/>
+            ) : (
+                <EventListenerPicker value={listener.config} disabled={readOnly}
+                                     onChange={(name) => onChange({...listener, config: name})}/>
+            )}
         </div>
     );
 }
@@ -424,6 +485,67 @@ export function DirectivePanel({directive: d, onChange, readOnly}: Props) {
                             </div>
                         </Field>
                     </div>
+
+                    {/* Row 5: Chat trigger toggle + listeners — how this command can fire.
+                        Chat and any number of listeners are independent; turning chat off
+                        doesn't require having a listener (though then nothing invokes it),
+                        and a command can have several listeners of either kind at once. */}
+                    <Field label="Chat trigger">
+                        <div style={{display: "flex", gap: 3}}>
+                            {([[true, "On"], [false, "Off"]] as const).map(([val, label]) => (
+                                <SegmentButton key={String(val)}
+                                               label={label}
+                                               active={(d.chatEnabled ?? true) === val}
+                                               disabled={readOnly}
+                                               onClick={() => !readOnly && upd({chatEnabled: val})}
+                                />
+                            ))}
+                        </div>
+                        {d.chatEnabled === false && (
+                            <span style={{fontSize: 10, color: "#2a2a2a"}}>
+                                Trigger/aliases above are ignored — this command only fires from listeners below.
+                            </span>
+                        )}
+                    </Field>
+
+                    <Field label="Listeners" grow>
+                        <div style={{display: "flex", flexDirection: "column", gap: 8}}>
+                            {(d.listeners ?? []).map((listener, i) => (
+                                <ListenerRow
+                                    key={i}
+                                    listener={listener}
+                                    readOnly={readOnly}
+                                    onChange={(next) => {
+                                        const listeners = [...(d.listeners ?? [])];
+                                        listeners[i] = next;
+                                        upd({listeners});
+                                    }}
+                                    onRemove={() => {
+                                        const listeners = (d.listeners ?? []).filter((_, j) => j !== i);
+                                        upd({listeners});
+                                    }}
+                                />
+                            ))}
+                            {!readOnly && (
+                                <button
+                                    onClick={() => upd({
+                                        listeners: [...(d.listeners ?? []), {
+                                            type: "event",
+                                            config: ""
+                                        }]
+                                    })}
+                                    className="text-xs self-start px-2 py-1 rounded"
+                                    style={{
+                                        color: "#555",
+                                        border: "1px dashed #2a2a2a",
+                                        background: "none",
+                                        cursor: "pointer"
+                                    }}>
+                                    + Add listener
+                                </button>
+                            )}
+                        </div>
+                    </Field>
 
                 </div>
             )}

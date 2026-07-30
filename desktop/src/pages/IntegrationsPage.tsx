@@ -25,10 +25,10 @@ interface HeaderRow {
 }
 
 const KIND_META = {
-    static: {label: "Static", color: "#818cf8", desc: "A fixed string value"},
-    http: {label: "HTTP", color: "#22c55e", desc: "Fetch from a URL"},
-    shell: {label: "Shell", color: "#f97316", desc: "Run a local command"},
-    websocket: {label: "WebSocket", color: "#06b6d4", desc: "Live data stream"},
+    static: {label: "Static", color: "#818cf8"},
+    http: {label: "HTTP", color: "#22c55e"},
+    shell: {label: "Shell", color: "#f97316"},
+    websocket: {label: "WebSocket", color: "#06b6d4"},
 } as const;
 type Kind = keyof typeof KIND_META;
 
@@ -37,6 +37,64 @@ const inputCss: React.CSSProperties = {
     border: "1px solid #2a2a2a", borderRadius: 6,
     padding: "7px 10px", fontSize: 13, width: "100%",
 };
+
+// ─── Kind icons ───────────────────────────────────────────────────────────────
+
+function StaticIcon({color, size = 14}: { color: string; size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{flexShrink: 0}}>
+            <path d="M2 4h12M2 8h8M2 12h10" stroke={color} strokeWidth="1.6" strokeLinecap="round"/>
+        </svg>
+    );
+}
+
+function HttpIcon({color, size = 14}: { color: string; size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{flexShrink: 0}}>
+            <circle cx="8" cy="8" r="6" stroke={color} strokeWidth="1.5"/>
+            <path d="M2 8h12M8 2c-2 2-2.5 3.5-2.5 6S6 12 8 14M8 2c2 2 2.5 3.5 2.5 6S10 12 8 14"
+                  stroke={color} strokeWidth="1.2" strokeLinecap="round"/>
+        </svg>
+    );
+}
+
+function ShellIcon({color, size = 14}: { color: string; size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{flexShrink: 0}}>
+            <rect x="1.5" y="2.5" width="13" height="11" rx="2" stroke={color} strokeWidth="1.4"/>
+            <path d="M4 6l2.5 2.5L4 11M9 11h3" stroke={color} strokeWidth="1.4" strokeLinecap="round"
+                  strokeLinejoin="round"/>
+        </svg>
+    );
+}
+
+function WebSocketIcon({color, size = 14}: { color: string; size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{flexShrink: 0}}>
+            <path d="M3.5 11.5A6 6 0 0 1 8 3a6 6 0 0 1 4.5 8.5" stroke={color} strokeWidth="1.4" strokeLinecap="round"/>
+            <path d="M5.5 9.5A3.5 3.5 0 0 1 8 5.5a3.5 3.5 0 0 1 2.5 4" stroke={color} strokeWidth="1.4"
+                  strokeLinecap="round"/>
+            <circle cx="8" cy="12" r="1.2" fill={color}/>
+        </svg>
+    );
+}
+
+function KindIcon({kind, color, size}: { kind: Kind; color: string; size?: number }) {
+    if (kind === "static") return <StaticIcon color={color} size={size}/>;
+    if (kind === "http") return <HttpIcon color={color} size={size}/>;
+    if (kind === "shell") return <ShellIcon color={color} size={size}/>;
+    if (kind === "websocket") return <WebSocketIcon color={color} size={size}/>;
+    return null;
+}
+
+function CheckIcon({size = 12}: { size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 12 12" fill="none" style={{flexShrink: 0}}>
+            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"
+                  strokeLinejoin="round"/>
+        </svg>
+    );
+}
 
 // ─── Shared UI ────────────────────────────────────────────────────────────────
 
@@ -74,7 +132,7 @@ function Toggle({value, onChange}: { value: boolean; onChange: (v: boolean) => v
 
 function StaticConfig({config, onChange}: { config: ConfigMap; onChange: (c: ConfigMap) => void }) {
     return (
-        <Field label="Value" hint="This exact string is substituted for {variable_name}">
+        <Field label="Value" hint={`This exact string is substituted for {variable_name}`}>
             <input type="text" value={(config.value as string) ?? ""}
                    onChange={(e) => onChange({...config, value: e.target.value})}
                    placeholder="https://discord.gg/example" style={inputCss}/>
@@ -118,10 +176,10 @@ function HttpConfig({config, onChange}: { config: ConfigMap; onChange: (c: Confi
 
             {(config.method as string) === "POST" && (
                 <Field label="Request body">
-          <textarea value={(config.body as string) ?? ""}
-                    onChange={(e) => onChange({...config, body: e.target.value})}
-                    placeholder='{"key": "value"}' rows={3}
-                    style={{...inputCss, fontFamily: "monospace", resize: "vertical"}}/>
+                    <textarea value={(config.body as string) ?? ""}
+                              onChange={(e) => onChange({...config, body: e.target.value})}
+                              placeholder='{"key": "value"}' rows={3}
+                              style={{...inputCss, fontFamily: "monospace", resize: "vertical"}}/>
                 </Field>
             )}
 
@@ -153,7 +211,7 @@ function HttpConfig({config, onChange}: { config: ConfigMap; onChange: (c: Confi
                     </div>
                 ))}
                 {headers.length === 0 && (
-                    <p className="text-xs" style={{color: "#444"}}>No custom headers — click + Add to add one.</p>
+                    <p className="text-xs" style={{color: "#444"}}>No custom headers.</p>
                 )}
             </div>
         </>
@@ -184,8 +242,6 @@ function WebSocketConfig({config, onChange}: { config: ConfigMap; onChange: (c: 
                        onChange={(e) => onChange({...config, path: e.target.value})}
                        placeholder="data.value" style={inputCss}/>
             </Field>
-            <p className="text-xs" style={{color: "#555"}}>The latest received message is used when the variable is
-                referenced.</p>
         </>
     );
 }
@@ -227,28 +283,29 @@ function IntegrationEditor({initial, onSave, onCancel}: {
                 </Field>
             </div>
 
+            {/* Source type picker — icons, not dots */}
             <div className="flex flex-col gap-2">
                 <label className="text-xs font-medium" style={{color: "#a0a0a0"}}>Source type</label>
                 <div className="grid grid-cols-2 gap-2">
-                    {(Object.keys(KIND_META) as Kind[]).map((k) => (
-                        <button key={k} onClick={() => setKind(k)}
-                                className="flex items-start gap-3 p-3 rounded-lg text-left"
-                                style={{
-                                    backgroundColor: kind === k ? `${KIND_META[k].color}15` : "#111",
-                                    border: `1px solid ${kind === k ? KIND_META[k].color + "44" : "#2a2a2a"}`,
-                                    cursor: "pointer",
-                                }}>
-              <span className="w-2 h-2 rounded-full flex-shrink-0 mt-1"
-                    style={{backgroundColor: KIND_META[k].color}}/>
-                            <div>
-                                <p className="text-xs font-semibold"
-                                   style={{color: kind === k ? KIND_META[k].color : "#d0d0d0"}}>
-                                    {KIND_META[k].label}
-                                </p>
-                                <p className="text-xs mt-0.5" style={{color: "#555"}}>{KIND_META[k].desc}</p>
-                            </div>
-                        </button>
-                    ))}
+                    {(Object.keys(KIND_META) as Kind[]).map((k) => {
+                        const active = kind === k;
+                        const meta = KIND_META[k];
+                        return (
+                            <button key={k} onClick={() => setKind(k)}
+                                    className="flex items-center gap-2.5 p-3 rounded-lg text-left"
+                                    style={{
+                                        backgroundColor: active ? `${meta.color}15` : "#111",
+                                        border: `1px solid ${active ? meta.color + "55" : "#2a2a2a"}`,
+                                        cursor: "pointer",
+                                    }}>
+                                <KindIcon kind={k} color={active ? meta.color : "#555"} size={15}/>
+                                <span className="text-xs font-semibold"
+                                      style={{color: active ? meta.color : "#888"}}>
+                                    {meta.label}
+                                </span>
+                            </button>
+                        );
+                    })}
                 </div>
             </div>
 
@@ -268,7 +325,7 @@ function IntegrationEditor({initial, onSave, onCancel}: {
                         className="px-4 py-1.5 text-xs font-semibold rounded"
                         style={{
                             backgroundColor: "var(--color-accent)", color: "#fff",
-                            opacity: canSave ? 1 : 0.4, cursor: canSave ? "pointer" : "default"
+                            opacity: canSave ? 1 : 0.4, cursor: canSave ? "pointer" : "default",
                         }}>
                     {initial ? "Save changes" : "Create"}
                 </button>
@@ -301,75 +358,67 @@ function IntegrationCard({integ, liveValue, testing, onEdit, onDelete, onTest, o
     const enabled = integ.enabled !== 0;
 
     return (
-        <div className="flex items-start gap-3 px-4 py-3 rounded-lg"
-             style={{backgroundColor: "#111", border: "1px solid #1e1e1e", opacity: enabled ? 1 : 0.6}}>
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg"
+             style={{
+                 backgroundColor: "#111",
+                 border: "1px solid #1e1e1e",
+                 opacity: enabled ? 1 : 0.5,
+             }}>
 
             {/* Enable toggle */}
-            <div className="flex-shrink-0 pt-0.5">
-                <Toggle value={enabled} onChange={onToggle}/>
+            <Toggle value={enabled} onChange={onToggle}/>
+
+            {/* Kind icon */}
+            <KindIcon kind={integ.kind as Kind} color={enabled ? meta.color : "#444"} size={14}/>
+
+            {/* Name + live value */}
+            <div className="flex-1 min-w-0 flex items-center gap-2">
+                <code className="text-sm font-bold flex-shrink-0"
+                      style={{color: enabled ? "var(--color-accent)" : "#555"}}>
+                    {`{${integ.name}}`}
+                </code>
+                {liveValue !== null && (
+                    <span className="text-xs font-mono truncate"
+                          style={{color: "#4ade80", backgroundColor: "#0a1a0a", padding: "1px 6px", borderRadius: 4}}>
+                        {liveValue || "(empty)"}
+                    </span>
+                )}
             </div>
 
-            {/* Info */}
-            <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                    <code className="text-sm font-bold" style={{color: "var(--color-accent)"}}>
-                        {`{${integ.name}}`}
-                    </code>
-                    <span className="text-xs px-1.5 py-0.5 rounded" style={{
-                        backgroundColor: meta.color + "15", color: meta.color, border: `1px solid ${meta.color}33`,
-                    }}>
-            {meta.label}
-          </span>
-                    {!enabled && (
-                        <span className="text-xs px-1.5 py-0.5 rounded"
-                              style={{backgroundColor: "#1a1a1a", color: "#555", border: "1px solid #222"}}>
-              disabled
-            </span>
-                    )}
-                </div>
-                {integ.description && (
-                    <p className="text-xs" style={{color: "#666"}}>{integ.description}</p>
-                )}
-                {/* Live test result */}
-                {liveValue !== null && (
-                    <p className="text-xs font-mono mt-1 truncate"
-                       style={{color: "#4ade80", backgroundColor: "#0a1a0a", padding: "2px 6px", borderRadius: 4}}>
-                        → {liveValue || "(empty)"}
-                    </p>
-                )}
-                {integ.cached_value && liveValue === null && (
-                    <p className="text-xs font-mono mt-0.5 truncate" style={{color: "#444"}}>
-                        → {integ.cached_value}
-                    </p>
-                )}
-            </div>
+            {/* Enabled checkmark */}
+            {enabled && (
+                <span className="flex-shrink-0" style={{color: "#22c55e"}} title="Enabled">
+                    <CheckIcon size={13}/>
+                </span>
+            )}
 
             {/* Actions */}
             <div className="flex gap-1.5 flex-shrink-0 items-center">
-                <button onClick={onTest} disabled={testing} title="Test — fetch live value"
+                <button onClick={onTest} disabled={testing} title="Fetch live value"
                         className="text-xs px-2.5 py-1 rounded"
                         style={{
-                            backgroundColor: "#1a1a1a", color: testing ? "#555" : "#888",
-                            border: "1px solid #2a2a2a", cursor: testing ? "default" : "pointer"
+                            backgroundColor: "#1a1a1a", color: testing ? "#444" : "#666",
+                            border: "1px solid #2a2a2a", cursor: testing ? "default" : "pointer",
                         }}>
                     {testing ? "…" : "Test"}
                 </button>
                 <button onClick={onEdit} className="text-xs px-2.5 py-1 rounded"
                         style={{
                             backgroundColor: "#1a1a1a",
-                            color: "#888",
+                            color: "#666",
                             border: "1px solid #2a2a2a",
                             cursor: "pointer"
                         }}>
                     Edit
                 </button>
-                <button onClick={onDelete} title="Delete integration"
-                        className="text-xs px-2 py-1 rounded"
-                        style={{
-                            backgroundColor: "#2a1a1a",
-                            color: "#ef4444",
-                            border: "1px solid #3a2020",
-                            cursor: "pointer"
+                <button onClick={onDelete} title="Delete"
+                        className="flex items-center justify-center w-6 h-6 rounded"
+                        style={{backgroundColor: "transparent", color: "#444", border: "none", cursor: "pointer"}}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.color = "#ef4444";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.color = "#444";
                         }}>
                     <CloseIcon size={10}/>
                 </button>
@@ -467,7 +516,7 @@ export function IntegrationsPage() {
             try {
                 const val = await invoke<string>("fetch_integration_value", {id: integ.id});
                 newValues[integ.id] = val;
-            } catch { /* skip failures silently */
+            } catch { /* skip */
             }
         }
         setLiveValues(newValues);
@@ -484,8 +533,8 @@ export function IntegrationsPage() {
                 <div>
                     <h1 className="text-sm font-semibold" style={{color: "#f1f1f1"}}>Integrations</h1>
                     <p className="text-xs mt-0.5" style={{color: "#555"}}>
-                        Dynamic variables usable as{" "}
-                        <code style={{color: "#818cf8"}}>{"{variable_name}"}</code> in any command response
+                        Dynamic variables — use as{" "}
+                        <code style={{color: "#818cf8"}}>{"{variable_name}"}</code> in command responses
                     </p>
                 </div>
                 <div className="flex gap-2">
@@ -494,7 +543,7 @@ export function IntegrationsPage() {
                                 className="text-xs px-3 py-1.5 rounded"
                                 style={{
                                     backgroundColor: "#1a1a1a", color: refreshing ? "#555" : "#888",
-                                    border: "1px solid #2a2a2a", cursor: refreshing ? "default" : "pointer"
+                                    border: "1px solid #2a2a2a", cursor: refreshing ? "default" : "pointer",
                                 }}>
                             {refreshing ? "Refreshing…" : "Refresh all"}
                         </button>
@@ -509,14 +558,14 @@ export function IntegrationsPage() {
 
             <div className="flex flex-1 min-h-0">
                 {/* List */}
-                <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
+                <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-1.5">
                     {integrations.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full gap-3">
                             <p className="text-sm" style={{color: "#444"}}>No integrations yet</p>
-                            <p className="text-xs text-center" style={{color: "#555", maxWidth: 320, lineHeight: 1.6}}>
-                                Create variables that pull values from APIs, shell commands, or static strings.
-                                Reference them in commands as <code
-                                style={{color: "#818cf8"}}>{"{variable_name}"}</code>.
+                            <p className="text-xs text-center" style={{color: "#555", maxWidth: 300, lineHeight: 1.6}}>
+                                Create variables from APIs, shell commands, or static values.
+                                Reference them in commands as{" "}
+                                <code style={{color: "#818cf8"}}>{"{variable_name}"}</code>.
                             </p>
                             <button onClick={() => setEditing("new")}
                                     className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded mt-2"
@@ -546,10 +595,11 @@ export function IntegrationsPage() {
                          style={{width: 500, borderLeft: "1px solid #1e1e1e", backgroundColor: "#0f0f0f"}}>
                         <div className="flex items-center justify-between px-5 py-3"
                              style={{borderBottom: "1px solid #1e1e1e"}}>
-              <span className="text-xs font-semibold" style={{color: "#f1f1f1"}}>
-                {editing === "new" ? "New integration" : `Edit {${editing.name}}`}
-              </span>
-                            <button onClick={() => setEditing(null)} style={{color: "#555", cursor: "pointer"}}>
+                            <span className="text-xs font-semibold" style={{color: "#f1f1f1"}}>
+                                {editing === "new" ? "New integration" : `Edit {${editing.name}}`}
+                            </span>
+                            <button onClick={() => setEditing(null)}
+                                    style={{color: "#555", cursor: "pointer", background: "none", border: "none"}}>
                                 <CloseIcon size={12}/>
                             </button>
                         </div>

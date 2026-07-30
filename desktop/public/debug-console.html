@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <title>Debug Console</title>
+    <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            background: #080808;
+            font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
+            color: #888;
+            overflow: hidden;
+            font-size: 12px;
+        }
+
+        /* ── Toolbar ──────────────────────────────────────────────────── */
+        #toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            height: 36px;
+            flex-shrink: 0;
+            padding: 0 12px;
+            background: #0a0a0a;
+            border-bottom: 1px solid #141414;
+        }
+
+        #toolbar .title {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: #2a2a2a;
+        }
+
+        .sep {
+            width: 1px;
+            height: 14px;
+            background: #1a1a1a;
+            flex-shrink: 0;
+        }
+
+        .filter-group {
+            display: flex;
+            gap: 3px;
+        }
+
+        .filter {
+            font-family: inherit;
+            font-size: 10px;
+            padding: 2px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            border: 1px solid #1a1a1a;
+            background: transparent;
+            color: #333;
+            transition: color 0.1s, border-color 0.1s, background 0.1s;
+        }
+
+        .filter:hover {
+            color: #777;
+            border-color: #2a2a2a;
+        }
+
+        .filter.active {
+            background: #141414;
+            border-color: #2a2a2a;
+            color: #bbb;
+        }
+
+        .filter.active.error {
+            color: #f87171;
+            border-color: #4a151533;
+            background: #1a080833;
+        }
+
+        .filter.active.warn {
+            color: #fbbf24;
+            border-color: #4a380033;
+            background: #1a150033;
+        }
+
+        .filter.active.log {
+            color: #60a5fa;
+            border-color: #1a3a5f33;
+            background: #0a182833;
+        }
+
+        .spacer {
+            flex: 1;
+        }
+
+        .btn {
+            font-family: inherit;
+            font-size: 10px;
+            padding: 2px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            border: 1px solid #1a1a1a;
+            background: transparent;
+            color: #333;
+        }
+
+        .btn:hover {
+            color: #aaa;
+            border-color: #333;
+        }
+
+        .btn.danger:hover {
+            color: #f87171;
+            border-color: #4a1515;
+        }
+
+        /* ── Count badges ─────────────────────────────────────────────── */
+        .badge {
+            display: inline-block;
+            margin-left: 4px;
+            font-size: 9px;
+            color: inherit;
+            opacity: 0.7;
+        }
+
+        /* ── Module selector ──────────────────────────────────────────── */
+        #module-select {
+            font-family: inherit;
+            font-size: 10px;
+            background: #0d0d0d;
+            color: #444;
+            border: 1px solid #1a1a1a;
+            border-radius: 3px;
+            padding: 2px 6px;
+            cursor: pointer;
+            outline: none;
+            max-width: 140px;
+        }
+
+        #module-select option {
+            background: #0d0d0d;
+            color: #666;
+        }
+
+        /* ── Entry list ───────────────────────────────────────────────── */
+        #entries {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 2px 0;
+        }
+
+        #entries::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        #entries::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        #entries::-webkit-scrollbar-thumb {
+            background: #1a1a1a;
+            border-radius: 2px;
+        }
+
+        .entry {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 2px 10px 2px 14px;
+            border-left: 2px solid transparent;
+            transition: background 0.05s;
+            line-height: 1.5;
+            position: relative;
+        }
+
+        .entry:hover {
+            background: #0d0d0d;
+        }
+
+        .entry:hover .copy-btn {
+            opacity: 1;
+        }
+
+        .entry.error {
+            border-left-color: #f8717133;
+            background: #0f050566;
+        }
+
+        .entry.warn {
+            border-left-color: #fbbf2433;
+        }
+
+        .entry.log {
+            border-left-color: #60a5fa22;
+        }
+
+        .entry.repl-out {
+            border-left-color: #a78bfa33;
+            background: #0a080f66;
+        }
+
+        .entry.repl-err {
+            border-left-color: #f8717188;
+            background: #100808;
+        }
+
+        .entry .ts {
+            font-size: 9px;
+            color: #222;
+            flex-shrink: 0;
+            min-width: 52px;
+            padding-top: 1px;
+        }
+
+        .entry .source {
+            font-size: 9px;
+            color: #2a2a2a;
+            flex-shrink: 0;
+            padding-top: 1px;
+            max-width: 100px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .entry .file-tag {
+            font-size: 9px;
+            color: #1e3a1e;
+            flex-shrink: 0;
+            padding-top: 1px;
+            max-width: 160px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .entry.error .file-tag {
+            color: #3a1e1e;
+        }
+
+        .entry .icon {
+            flex-shrink: 0;
+            font-size: 11px;
+        }
+
+        .entry.error .icon {
+            color: #f87171;
+        }
+
+        .entry.warn .icon {
+            color: #fbbf24;
+        }
+
+        .entry.log .icon {
+            color: #60a5fa;
+        }
+
+        .entry.info .icon {
+            color: #888;
+        }
+
+        .entry.repl-out .icon {
+            color: #a78bfa;
+        }
+
+        .entry.repl-err .icon {
+            color: #f87171;
+        }
+
+        .entry .msg {
+            flex: 1;
+            word-break: break-all;
+            white-space: pre-wrap;
+            font-size: 11px;
+        }
+
+        .entry.error .msg {
+            color: #f87171;
+        }
+
+        .entry.warn .msg {
+            color: #fbbf24;
+        }
+
+        .entry.log .msg {
+            color: #60a5fa;
+        }
+
+        .entry.info .msg {
+            color: #555;
+        }
+
+        .entry.repl-out .msg {
+            color: #a78bfa;
+        }
+
+        .entry.repl-err .msg {
+            color: #f8717199;
+        }
+
+        /* ── Per-entry copy button ────────────────────────────────────── */
+        .copy-btn {
+            flex-shrink: 0;
+            opacity: 0;
+            padding: 1px 4px;
+            border-radius: 3px;
+            border: 1px solid transparent;
+            background: transparent;
+            cursor: pointer;
+            color: #333;
+            font-size: 9px;
+            font-family: inherit;
+            transition: opacity 0.1s, color 0.1s, border-color 0.1s;
+            align-self: center;
+        }
+
+        .copy-btn:hover {
+            color: #777;
+            border-color: #2a2a2a;
+            background: #111;
+        }
+
+        .copy-btn.copied {
+            color: #22c55e;
+            opacity: 1;
+        }
+
+        /* ── Status bar ───────────────────────────────────────────────── */
+        #status {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            height: 22px;
+            flex-shrink: 0;
+            padding: 0 14px;
+            border-top: 1px solid #0f0f0f;
+            font-size: 10px;
+            color: #222;
+        }
+
+        /* ── REPL bar ─────────────────────────────────────────────────── */
+        #repl-bar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            border-top: 1px solid #141414;
+            background: #050505;
+            flex-shrink: 0;
+        }
+
+        #repl-prefix {
+            font-size: 12px;
+            color: #a78bfa;
+            flex-shrink: 0;
+            user-select: none;
+        }
+
+        #repl-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            font-family: inherit;
+            font-size: 11px;
+            color: #ccc;
+            caret-color: #a78bfa;
+        }
+
+        #repl-input::placeholder {
+            color: #2a2a2a;
+        }
+
+        #repl-run {
+            font-family: inherit;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            border: 1px solid #2a1a5a;
+            background: #0d0818;
+            color: #a78bfa;
+            flex-shrink: 0;
+        }
+
+        #repl-run:hover {
+            background: #14092a;
+            border-color: #a78bfa44;
+        }
+
+        #repl-run:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        /* ── Empty state ─────────────────────────────────────────────── */
+        #empty {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            gap: 8px;
+            color: #1e1e1e;
+            font-size: 11px;
+        }
+
+        #empty code {
+            color: #2a2a2a;
+        }
+
+        /* ── Layout ───────────────────────────────────────────────────── */
+        body {
+            display: flex;
+            flex-direction: column;
+        }
+    </style>
+</head>
+<body>
+
+<div id="toolbar">
+    <span class="title">Console</span>
+    <div class="sep"></div>
+    <div class="filter-group">
+        <button class="filter active" data-f="all">All <span class="badge" id="c-all"></span></button>
+        <button class="filter error" data-f="error">Errors <span class="badge" id="c-error"></span></button>
+        <button class="filter warn" data-f="warn">Warn <span class="badge" id="c-warn"></span></button>
+        <button class="filter log" data-f="log">Script <span class="badge" id="c-log"></span></button>
+    </div>
+    <div class="spacer"></div>
+    <select id="module-select" title="REPL module context">
+        <option value="">— no module —</option>
+    </select>
+    <div class="sep"></div>
+    <button class="btn" id="copy-all-btn" title="Copy all visible entries to clipboard">Copy All</button>
+    <button class="btn" id="pause-btn">⏸ Pause</button>
+    <button class="btn danger" id="clear-btn">Clear</button>
+</div>
+
+<div id="entries">
+    <div id="empty">
+        <div>No output yet.</div>
+        <div><code>console.log("msg")</code> in any script, or use the REPL below.</div>
+    </div>
+</div>
+
+<div id="status">
+    <span id="s-total"></span>
+    <span id="s-errors" style="color:#f8717166"></span>
+    <span id="s-warns" style="color:#fbbf2466"></span>
+</div>
+
+<div id="repl-bar">
+    <span id="repl-prefix">❯</span>
+    <input id="repl-input" type="text" placeholder="Rhai expression… (Enter to run)" autocomplete="off"
+           spellcheck="false"/>
+    <button id="repl-run">Run</button>
+</div>
+
+<script>
+    const ICONS = {error: '✕', warn: '⚠', log: '›', info: '›', 'repl-out': '◈', 'repl-err': '✕'};
+
+    let entries = [];
+    let seq = 0;
+    let filter = 'all';
+    let paused = false;
+    let replHist = [];
+    let replIdx = -1;
+
+    // ── Tauri bridge (available as soon as __TAURI__ is set) ──────
+    let tauriInvoke = null;
+
+    function pad(n) {
+        return String(n).padStart(2, '0');
+    }
+
+    function ts() {
+        const d = new Date();
+        return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+
+    function addEntry(level, message, source, file) {
+        const validLevels = ['error', 'warn', 'log', 'info', 'repl-out', 'repl-err'];
+        if (!validLevels.includes(level)) level = 'info';
+        entries.push({id: ++seq, level, message: String(message), source: source || '', file: file || '', ts: ts()});
+        if (entries.length > 5000) entries = entries.slice(-4500);
+        if (!paused) renderEntries();
+        updateCounts();
+    }
+
+    function levelClass(l) {
+        if (l === 'repl-out') return 'repl-out';
+        if (l === 'repl-err') return 'repl-err';
+        return l === 'error' ? 'error' : l === 'warn' ? 'warn' : l === 'log' ? 'log' : 'info';
+    }
+
+    function escHtml(s) {
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function copyText(text) {
+        navigator.clipboard.writeText(text).catch(() => {
+        });
+    }
+
+    function renderEntries() {
+        const container = document.getElementById('entries');
+        const filterSet = new Set(['error', 'warn', 'log']);
+        const visible = filter === 'all'
+            ? entries
+            : filter === 'log'
+                ? entries.filter(e => e.level === 'log' || e.level === 'info' || e.level === 'repl-out' || e.level === 'repl-err')
+                : entries.filter(e => e.level === filter);
+
+        if (visible.length === 0) {
+            container.innerHTML = `<div id="empty">
+            <div>${entries.length === 0 ? 'No output yet.' : 'No entries match filter.'}</div>
+            ${entries.length === 0 ? '<div><code>console.log("msg")</code> in any script, or use the REPL below.</div>' : ''}
+        </div>`;
+            return;
+        }
+
+        const wasAtBottom = (container.scrollHeight - container.clientHeight - container.scrollTop) < 40;
+
+        container.innerHTML = visible.map(e => {
+            const basename = e.file ? e.file.split(/[\\/]/).pop() : '';
+            const copyData = escHtml(e.message);
+            return `<div class="entry ${levelClass(e.level)}" data-id="${e.id}">
+            <span class="ts">${e.ts}</span>
+            ${e.source ? `<span class="source" title="${escHtml(e.source)}">${escHtml(e.source)}</span>` : ''}
+            ${basename ? `<span class="file-tag" title="${escHtml(e.file)}">${escHtml(basename)}</span>` : ''}
+            <span class="icon">${ICONS[e.level] || '›'}</span>
+            <span class="msg">${escHtml(e.message)}</span>
+            <button class="copy-btn" title="Copy" onclick="copyEntryById(${e.id})">⎘</button>
+        </div>`;
+        }).join('');
+
+        if (wasAtBottom) container.scrollTop = container.scrollHeight;
+    }
+
+    function copyEntryById(id) {
+        const e = entries.find(x => x.id === id);
+        if (!e) return;
+        copyText(e.message);
+        // Flash the button
+        const btn = document.querySelector(`.entry[data-id="${id}"] .copy-btn`);
+        if (btn) {
+            btn.textContent = '✓';
+            btn.classList.add('copied');
+            setTimeout(() => {
+                btn.textContent = '⎘';
+                btn.classList.remove('copied');
+            }, 1200);
+        }
+    }
+
+    function updateCounts() {
+        const counts = {};
+        entries.forEach(e => counts[e.level] = (counts[e.level] || 0) + 1);
+
+        const logCount = (counts.log || 0) + (counts.info || 0) + (counts['repl-out'] || 0) + (counts['repl-err'] || 0);
+        document.getElementById('c-all').textContent = entries.length || '';
+        document.getElementById('c-error').textContent = counts.error || '';
+        document.getElementById('c-warn').textContent = counts.warn || '';
+        document.getElementById('c-log').textContent = logCount || '';
+
+        const tot = document.getElementById('s-total');
+        const err = document.getElementById('s-errors');
+        const wrn = document.getElementById('s-warns');
+        tot.textContent = entries.length + (entries.length === 1 ? ' entry' : ' entries');
+        err.textContent = counts.error ? counts.error + ' error' + (counts.error > 1 ? 's' : '') : '';
+        wrn.textContent = counts.warn ? counts.warn + ' warn' + (counts.warn > 1 ? 's' : '') : '';
+    }
+
+    // ── Copy all ──────────────────────────────────────────────────
+    document.getElementById('copy-all-btn').addEventListener('click', () => {
+        const filterSet = filter === 'all' ? null : filter;
+        const visible = filter === 'all'
+            ? entries
+            : filter === 'log'
+                ? entries.filter(e => ['log', 'info', 'repl-out', 'repl-err'].includes(e.level))
+                : entries.filter(e => e.level === filter);
+        const text = visible.map(e =>
+            `[${e.ts}]${e.source ? ' [' + e.source + ']' : ''}${e.file ? ' ' + e.file : ''} ${e.message}`
+        ).join('\n');
+        copyText(text);
+        const btn = document.getElementById('copy-all-btn');
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.style.color = '#22c55e';
+        setTimeout(() => {
+            btn.textContent = orig;
+            btn.style.color = '';
+        }, 1400);
+    });
+
+    // ── Filter buttons ────────────────────────────────────────────
+    document.querySelectorAll('.filter').forEach(btn => {
+        btn.addEventListener('click', () => {
+            filter = btn.dataset.f;
+            document.querySelectorAll('.filter').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderEntries();
+        });
+    });
+
+    // ── Pause / clear ─────────────────────────────────────────────
+    const pauseBtn = document.getElementById('pause-btn');
+    pauseBtn.addEventListener('click', () => {
+        paused = !paused;
+        pauseBtn.textContent = paused ? '▶ Resume' : '⏸ Pause';
+        pauseBtn.style.color = paused ? '#fbbf24' : '';
+        if (!paused) renderEntries();
+    });
+
+    document.getElementById('clear-btn').addEventListener('click', () => {
+        entries = [];
+        seq = 0;
+        renderEntries();
+        updateCounts();
+    });
+
+    // ── REPL ──────────────────────────────────────────────────────
+    const replInput = document.getElementById('repl-input');
+    const replRun = document.getElementById('repl-run');
+    const moduleSelect = document.getElementById('module-select');
+
+    async function runRepl() {
+        const code = replInput.value.trim();
+        if (!code || !tauriInvoke) return;
+
+        // Add to history
+        if (replHist[0] !== code) replHist.unshift(code);
+        if (replHist.length > 100) replHist.pop();
+        replIdx = -1;
+
+        // Echo the expression
+        addEntry('log', '❯ ' + code, 'repl', '');
+
+        const moduleId = moduleSelect.value || null;
+        replRun.disabled = true;
+
+        try {
+            const result = await tauriInvoke('eval_rhai_repl', {code, moduleId});
+            // Parse and pretty-print the JSON result
+            let display;
+            try {
+                const parsed = JSON.parse(result);
+                display = typeof parsed === 'string' ? JSON.stringify(parsed) : JSON.stringify(parsed, null, 2);
+            } catch {
+                display = result;
+            }
+            addEntry('repl-out', display, 'repl', '');
+        } catch (err) {
+            addEntry('repl-err', String(err), 'repl', '');
+        } finally {
+            replRun.disabled = false;
+            replInput.value = '';
+            replInput.focus();
+        }
+    }
+
+    replRun.addEventListener('click', runRepl);
+    replInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            runRepl();
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (replIdx < replHist.length - 1) {
+                replIdx++;
+                replInput.value = replHist[replIdx];
+                replInput.setSelectionRange(9999, 9999);
+            }
+        } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (replIdx > 0) {
+                replIdx--;
+                replInput.value = replHist[replIdx];
+            } else {
+                replIdx = -1;
+                replInput.value = '';
+            }
+        }
+    });
+
+    // ── Tauri event subscriptions ─────────────────────────────────
+    (function waitForTauri() {
+        if (typeof window.__TAURI__ === 'undefined') {
+            setTimeout(waitForTauri, 30);
+            return;
+        }
+        const {listen} = window.__TAURI__.event;
+        tauriInvoke = window.__TAURI__.core.invoke;
+
+        // Script console.log / warn / error
+        listen('console-log', e => {
+            const p = e.payload;
+            addEntry(p.level || 'log', p.message, p.command || 'script', '');
+        });
+
+        // Bot: module script file not found
+        listen('bot-script-error', e => {
+            addEntry('error', e.payload, 'bot', '');
+        });
+
+        // Bot: script compile / runtime errors
+        listen('bot-runtime-error', e => {
+            const p = e.payload;
+            const msg = typeof p === 'string' ? p : (p.message || JSON.stringify(p));
+            const src = (typeof p === 'object' && p.command) ? p.command : 'runtime';
+            const file = (typeof p === 'object' && p.file) ? p.file : '';
+            addEntry('error', msg, src, file);
+        });
+
+        // Seed historical events so this window shows content even when opened after the in-app console
+        fetch('http://localhost:24363/api/dev/console/events?after=0')
+            .then(r => r.json())
+            .then(evts => {
+                evts.forEach(e => addEntry(e.level, e.message, e.command || 'script', ''));
+            })
+            .catch(() => {
+            });
+
+        // Populate module selector for REPL context
+        tauriInvoke('list_modules').then(modules => {
+            modules.filter(m => m.enabled).forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.name || m.id;
+                moduleSelect.appendChild(opt);
+            });
+        }).catch(() => {
+        });
+
+        // Keep module list fresh when modules change
+        listen('module-updated', () => {
+            tauriInvoke('list_modules').then(modules => {
+                const cur = moduleSelect.value;
+                while (moduleSelect.options.length > 1) moduleSelect.remove(1);
+                modules.filter(m => m.enabled).forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.id;
+                    opt.textContent = m.name || m.id;
+                    moduleSelect.appendChild(opt);
+                });
+                moduleSelect.value = cur;
+            }).catch(() => {
+            });
+        });
+    })();
+</script>
+</body>
+</html>

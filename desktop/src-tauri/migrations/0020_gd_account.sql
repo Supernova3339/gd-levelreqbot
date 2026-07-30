@@ -1,0 +1,6 @@
+ALTER TABLE config
+    ADD COLUMN gd_account_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE config
+    ADD COLUMN gd_username TEXT NOT NULL DEFAULT '';
+ALTER TABLE config
+    ADD COLUMN gd_gjp2_enc TEXT NOT NULL DEFAULT '';

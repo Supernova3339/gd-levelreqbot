@@ -30,4 +30,37 @@ export default defineConfig(async () => ({
             ignored: ["**/src-tauri/**"],
         },
     },
+
+    build: {
+        rollupOptions: {
+            output: {
+                // perf: manually chunk heavy deps so they get separate cache-busted files
+                // and the main bundle stays small for fast first paint.
+                manualChunks: (id) => {
+                    // ReactFlow (visual node canvas) — large, rarely used
+                    if (id.includes("reactflow") || id.includes("@reactflow")) {
+                        return "reactflow";
+                    }
+                    // floating-ui (autocomplete positioning)
+                    if (id.includes("@floating-ui")) {
+                        return "floating-ui";
+                    }
+                    // use-debounce
+                    if (id.includes("use-debounce")) {
+                        return "debounce";
+                    }
+                    // Tauri API modules
+                    if (id.includes("@tauri-apps")) {
+                        return "tauri-api";
+                    }
+                    // React core
+                    if (id.includes("node_modules/react/") || id.includes("node_modules/react-dom/")) {
+                        return "react-vendor";
+                    }
+                },
+            },
+        },
+        // Warn on chunks > 500 kB
+        chunkSizeWarningLimit: 500,
+    },
 }));

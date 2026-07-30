@@ -1,16 +1,17 @@
 use crate::queue::QueueState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Library {
-    pub id:          i64,
-    pub name:        String,
-    pub description: String,
-    pub code:        String,
-    pub is_stdlib:   bool,
-    pub enabled:     bool,
+    pub id:            i64,
+    pub name:          String,
+    pub description:   String,
+    pub code:          String,
+    pub is_stdlib:     bool,
+    pub enabled:       bool,
+    pub source_module: Option<String>,
 }
 
 #[tauri::command]
@@ -20,7 +21,8 @@ pub async fn get_libraries(
     let pool = queue.db.read().await;
     sqlx::query_as::<_, Library>(
         "SELECT id, name, description, code,
-         (is_stdlib != 0) as is_stdlib, (enabled != 0) as enabled
+         (is_stdlib != 0) as is_stdlib, (enabled != 0) as enabled,
+         source_module
          FROM libraries ORDER BY is_stdlib DESC, name ASC"
     )
     .fetch_all(&*pool)
@@ -84,6 +86,37 @@ pub async fn delete_library(
         .await
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn uninstall_library(
+    queue:      State<'_, Arc<QueueState>>,
+    name:       String,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let pool = queue.db.read().await;
+    let is_stdlib: i64 = sqlx::query_scalar(
+        "SELECT is_stdlib FROM libraries WHERE name = ?"
+    )
+    .bind(&name)
+    .fetch_optional(&*pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .unwrap_or(0);
+
+    if is_stdlib != 0 {
+        return Err("Cannot uninstall a built-in stdlib library.".into());
+    }
+
+    sqlx::query("DELETE FROM libraries WHERE name = ? AND is_stdlib = 0")
+        .bind(&name)
+        .execute(&*pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    drop(pool);
+    app_handle.emit("library-updated", &name).ok();
+    Ok(())
 }
 
 #[tauri::command]

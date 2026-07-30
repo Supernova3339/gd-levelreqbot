@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::process::Command as ShellCommand;
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::error;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Integration {
@@ -80,7 +80,10 @@ pub async fn resolve(integration: &Integration) -> Result<String> {
             if cmd.is_empty() { return Ok(String::new()); }
 
             #[cfg(target_os = "windows")]
-            let output = ShellCommand::new("cmd").args(["/C", &cmd]).output();
+            let output = {
+                use std::os::windows::process::CommandExt;
+                ShellCommand::new("cmd").args(["/C", &cmd]).creation_flags(0x08000000).output()
+            };
             #[cfg(not(target_os = "windows"))]
             let output = ShellCommand::new("sh").args(["-c", &cmd]).output();
 
@@ -95,6 +98,7 @@ pub async fn resolve(integration: &Integration) -> Result<String> {
 }
 
 /// Resolve all enabled integrations and return a map of name → value.
+#[allow(dead_code)]
 pub async fn resolve_all(pool: &SqlitePool) -> std::collections::HashMap<String, String> {
     let integrations: Vec<Integration> = sqlx::query_as(
         "SELECT id, name, kind, config, description, enabled, cached_value, last_fetched

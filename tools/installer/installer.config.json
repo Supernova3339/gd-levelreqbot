@@ -1,0 +1,68 @@
+{
+  "$comment": "Dynamic installer configuration — everything brandable/tweakable lives here. build.mjs merges this with desktop/src-tauri/tauri.conf.json to produce the embedded installer manifest. Paths are relative to this file.",
+  "iconIco": "../../desktop/src-tauri/icons/icon.ico",
+  "iconPng": "../../desktop/src-tauri/icons/128x128.png",
+  "licenseFile": "assets/TERMS.md",
+  "homepage": "https://supersoft.us",
+  "defaults": {
+    "desktop_shortcut": true,
+    "start_menu": true,
+    "install_cli": false,
+    "enable_dev": false,
+    "file_assoc": true,
+    "launch_after": true
+  },
+  "fileAssociations": [
+    {
+      "ext": "gdui",
+      "progId": "GDUIModule",
+      "description": "GDUI module bundle"
+    },
+    {
+      "ext": "rhai",
+      "progId": "RhaiScript",
+      "description": "Rhai script"
+    },
+    {
+      "ext": "gdmod",
+      "progId": "GDModule",
+      "description": "Built module"
+    },
+    {
+      "ext": "gdpck",
+      "progId": "GDPackage",
+      "description": "Built package"
+    },
+    {
+      "ext": "gdlib",
+      "progId": "GDLibrary",
+      "description": "Built library"
+    },
+    {
+      "ext": "gdlqpack",
+      "progId": "GDCommandPack",
+      "description": "A pack of commands shared from another installation"
+    }
+  ],
+  "offers": [
+    {
+      "id": "queue-core",
+      "name": "Queue Core",
+      "description": "Core queue commands and widgets from the marketplace.",
+      "default": true
+    }
+  ],
+  "preset": {
+    "modes": {
+      "gd": true,
+      "sub": false,
+      "smart": false,
+      "youtube": false
+    },
+    "limits": {
+      "viewer_request_limit": 1,
+      "subscriber_request_limit": 2,
+      "max_queue_size": 0
+    }
+  }
+}

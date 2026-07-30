@@ -20,6 +20,11 @@ define('LICENSE_PUBLIC_KEY_PATH', __DIR__ . '/keys/public.pem');
 // Mirror of OWNER_GITHUB_IDS in external/licensing/config.php.
 define('OWNER_GITHUB_IDS', [63515814]);
 
+// Optional GitHub personal access token for the marketplace's GitHub API calls
+// (resolveGithubSource). Without this, unauthenticated rate limit is 60 req/hr.
+// Set to null or '' to skip authentication.
+define('GITHUB_TOKEN', 'REDACTED_GITHUB_TOKEN');
+
 date_default_timezone_set('UTC');
 
 // ─── Rate limiting (APCu, 120 req/min per IP) ────────────────────────────────

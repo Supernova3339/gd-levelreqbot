@@ -1,10 +1,6 @@
 RewriteEngine On
 RewriteBase /gdlvlreqbot/marketplace/
 
-# Pass Authorization header through to PHP (stripped by Apache CGI/FastCGI by default)
-RewriteCond %{HTTP:Authorization} .
-RewriteRule ^ - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
-
 RewriteCond %{REQUEST_METHOD} OPTIONS
 RewriteRule ^(.*)$ index.php [QSA,L]
 

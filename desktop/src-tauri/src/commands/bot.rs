@@ -1,11 +1,13 @@
 ﻿use base64::Engine as _;
 use crate::bot::cmd_cache::CommandCache;
 use crate::bot::dev::DevLogger;
-use crate::bot::{handler, BotState, BotStatus};
+use crate::bot::{handler, redemption_handler, BotState, BotStatus};
 use crate::bot::platform::ChatPlatform;
 use crate::bot::twitch::TwitchBot;
+use crate::bot::twitch_api::CustomReward;
 use crate::bot::youtube::YouTubeBot;
 use crate::config::AppConfig;
+use crate::modules::ModuleState;
 use crate::queue::QueueState;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -34,11 +36,12 @@ pub async fn get_bot_status(bot: State<'_, Arc<BotState>>) -> Result<BotStatusRe
 
 #[tauri::command]
 pub async fn start_bot(
-    config: State<'_, Arc<RwLock<AppConfig>>>,
-    bot: State<'_, Arc<BotState>>,
-    queue: State<'_, Arc<QueueState>>,
-    cache: State<'_, Arc<CommandCache>>,
-    dev: State<'_, Arc<DevLogger>>,
+    config:  State<'_, Arc<RwLock<AppConfig>>>,
+    bot:     State<'_, Arc<BotState>>,
+    queue:   State<'_, Arc<QueueState>>,
+    cache:   State<'_, Arc<CommandCache>>,
+    dev:     State<'_, Arc<DevLogger>>,
+    modules: State<'_, Arc<ModuleState>>,
 ) -> Result<(), String> {
     if !config.read().await.setup_complete {
         return Err("Setup is not complete. Please configure the bot first.".to_string());
@@ -214,16 +217,33 @@ pub async fn start_bot(
     };
 
     // Spawn the chat command processor
-    let rx         = bot.message_tx.subscribe();
-    let queue_arc  = Arc::clone(&queue);
-    let config_arc = Arc::clone(&config);
-    let client_arc = Arc::clone(&twitch_bot);
-    let yt_arc     = youtube_bot_arc;
-    let app_handle = bot.app_handle.clone();
-    let cache_arc  = Arc::clone(&cache);
+    let rx           = bot.message_tx.subscribe();
+    let queue_arc    = Arc::clone(&queue);
+    let config_arc   = Arc::clone(&config);
+    let client_arc   = Arc::clone(&twitch_bot);
+    let yt_arc       = youtube_bot_arc.clone();
+    let app_handle   = bot.app_handle.clone();
+    let cache_arc    = Arc::clone(&cache);
+    let modules_arc  = Arc::clone(&modules);
 
     tokio::spawn(async move {
-        handler::process_messages(rx, queue_arc, config_arc, client_arc, yt_arc, app_handle, cache_arc).await;
+        handler::process_messages(rx, queue_arc, config_arc, client_arc, yt_arc, app_handle, cache_arc, modules_arc).await;
+    });
+
+    // Spawn the channel-point redemption processor (EventSub, if the token has the scope).
+    let redemption_rx  = twitch_bot.subscribe_redemptions();
+    let redemption_queue  = Arc::clone(&queue);
+    let redemption_config  = Arc::clone(&config);
+    let redemption_client = Arc::clone(&twitch_bot);
+    let redemption_yt      = youtube_bot_arc.clone();
+    let redemption_app     = bot.app_handle.clone();
+    let redemption_modules = Arc::clone(&modules);
+    let redemption_cache   = Arc::clone(&cache);
+    tokio::spawn(async move {
+        redemption_handler::process_redemptions(
+            redemption_rx, redemption_queue, redemption_config, redemption_client, redemption_yt,
+            redemption_app, redemption_modules, redemption_cache,
+        ).await;
     });
 
     *bot.status.write().await = BotStatus::Connected;
@@ -299,4 +319,54 @@ pub async fn stop_bot(bot: State<'_, Arc<BotState>>) -> Result<(), String> {
     *bot.status.write().await = BotStatus::Stopped;
     bot.app_handle.emit("bot-status-changed", BotStatus::Stopped).ok();
     Ok(())
+}
+
+/// List this app's manageable Twitch channel-point rewards. Requires the bot
+/// to be connected and the token to have the `channel:manage:redemptions` scope
+/// (reconnect in Settings → Twitch if this errors on an older token).
+#[tauri::command]
+pub async fn list_twitch_rewards(bot: State<'_, Arc<BotState>>) -> Result<Vec<CustomReward>, String> {
+    let client = bot.client.read().await.clone()
+        .ok_or_else(|| "Twitch bot is not connected.".to_string())?;
+    client.list_rewards().await.map_err(|e| e.to_string())
+}
+
+/// Create a new Twitch channel-point reward.
+#[tauri::command]
+pub async fn create_twitch_reward(
+    bot:    State<'_, Arc<BotState>>,
+    title:  String,
+    cost:   i64,
+    prompt: Option<String>,
+) -> Result<CustomReward, String> {
+    let client = bot.client.read().await.clone()
+        .ok_or_else(|| "Twitch bot is not connected.".to_string())?;
+    client.create_reward(&title, cost, prompt.as_deref().unwrap_or(""))
+        .await.map_err(|e| e.to_string())
+}
+
+/// Update an existing reward's title/cost/prompt/enabled state. Pass `None` for
+/// fields you don't want to change. Icons can't be set via this API — Twitch
+/// dashboard only, there is no endpoint for it.
+#[tauri::command]
+pub async fn update_twitch_reward(
+    bot:        State<'_, Arc<BotState>>,
+    reward_id:  String,
+    title:      Option<String>,
+    cost:       Option<i64>,
+    prompt:     Option<String>,
+    is_enabled: Option<bool>,
+) -> Result<CustomReward, String> {
+    let client = bot.client.read().await.clone()
+        .ok_or_else(|| "Twitch bot is not connected.".to_string())?;
+    client.update_reward(&reward_id, title.as_deref(), cost, prompt.as_deref(), is_enabled)
+        .await.map_err(|e| e.to_string())
+}
+
+/// Delete a channel-point reward (must have been created by this app).
+#[tauri::command]
+pub async fn delete_twitch_reward(bot: State<'_, Arc<BotState>>, reward_id: String) -> Result<(), String> {
+    let client = bot.client.read().await.clone()
+        .ok_or_else(|| "Twitch bot is not connected.".to_string())?;
+    client.delete_reward(&reward_id).await.map_err(|e| e.to_string())
 }

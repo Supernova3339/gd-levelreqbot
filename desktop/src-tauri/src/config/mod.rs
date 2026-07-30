@@ -28,6 +28,7 @@ pub struct ModesConfig {
 pub struct LimitsConfig {
     #[serde(default = "default_viewer_limit")]     pub viewer_request_limit:     u32,
     #[serde(default = "default_subscriber_limit")] pub subscriber_request_limit: u32,
+    #[serde(default)]                              pub max_queue_size:           u32,
 }
 
 #[derive(FromRow)]
@@ -37,10 +38,13 @@ struct ConfigRow {
     twitch_access_token: String, twitch_refresh_token: String,
     youtube_access_token: String, youtube_refresh_token: String, youtube_api_key: String,
     mode_gd: i64, mode_sub: i64, mode_smart: i64, mode_youtube: i64,
-    viewer_request_limit: i64, subscriber_request_limit: i64,
+    viewer_request_limit: i64, subscriber_request_limit: i64, queue_max_size: i64,
     setup_complete: i64, auto_copy_level_id: i64,
     level_thumbnails: i64, thumbnail_quality: String,
     ws_enabled: i64, ws_port: i64, ws_secret: String,
+    gd_account_id: i64, gd_username: String, gd_gjp2_enc: String,
+    gd_icon_url: String, gd_icon_b64: String,
+    queue_open: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,16 +59,34 @@ impl Default for WsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GDAccount {
+    #[serde(default)] pub account_id: i64,
+    #[serde(default)] pub username:   String,
+    #[serde(default)] pub gjp2_enc:   String,
+    #[serde(default)] pub icon_url:   String,
+    #[serde(default)] pub icon_b64:   String,
+}
+
+impl Default for GDAccount {
+    fn default() -> Self {
+        Self { account_id: 0, username: String::new(), gjp2_enc: String::new(), icon_url: String::new(), icon_b64: String::new() }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub auth:               AuthConfig,
     pub modes:              ModesConfig,
     pub limits:             LimitsConfig,
     #[serde(default)]
     pub ws:                 WsConfig,
+    #[serde(default)]
+    pub gd_account:         GDAccount,
     pub setup_complete:      bool,
     pub auto_copy_level_id:  bool,
     pub level_thumbnails:    bool,
     pub thumbnail_quality:   String,
+    pub queue_open:          bool,
     #[serde(skip)]
     pool: Option<SqlitePool>,
 }
@@ -76,10 +98,13 @@ impl AppConfig {
                     twitch_access_token, twitch_refresh_token,
                     youtube_access_token, youtube_refresh_token, youtube_api_key,
                     mode_gd, mode_sub, mode_smart, mode_youtube,
-                    viewer_request_limit, subscriber_request_limit,
+                    viewer_request_limit, subscriber_request_limit, queue_max_size,
                     setup_complete, auto_copy_level_id,
                     level_thumbnails, thumbnail_quality,
-                    ws_enabled, ws_port, ws_secret
+                    ws_enabled, ws_port, ws_secret,
+                    gd_account_id, gd_username, gd_gjp2_enc,
+                    gd_icon_url, gd_icon_b64,
+                    queue_open
              FROM config WHERE id = 1",
         )
         .fetch_one(pool).await.context("failed to load config")?;
@@ -104,16 +129,25 @@ impl AppConfig {
             limits: LimitsConfig {
                 viewer_request_limit:     row.viewer_request_limit as u32,
                 subscriber_request_limit: row.subscriber_request_limit as u32,
+                max_queue_size:           row.queue_max_size as u32,
             },
             ws: WsConfig {
                 enabled: row.ws_enabled != 0,
                 port:    row.ws_port as u16,
                 secret:  row.ws_secret,
             },
+            gd_account: GDAccount {
+                account_id: row.gd_account_id,
+                username:   row.gd_username,
+                gjp2_enc:   row.gd_gjp2_enc,
+                icon_url:   row.gd_icon_url,
+                icon_b64:   row.gd_icon_b64,
+            },
             setup_complete:     row.setup_complete != 0,
             auto_copy_level_id: row.auto_copy_level_id != 0,
             level_thumbnails:   row.level_thumbnails != 0,
             thumbnail_quality:  row.thumbnail_quality,
+            queue_open:         row.queue_open != 0,
             pool: Some(pool.clone()),
         })
     }
@@ -161,10 +195,13 @@ impl AppConfig {
                 twitch_access_token = ?, twitch_refresh_token = ?,
                 youtube_access_token = ?, youtube_refresh_token = ?, youtube_api_key = ?,
                 mode_gd = ?, mode_sub = ?, mode_smart = ?, mode_youtube = ?,
-                viewer_request_limit = ?, subscriber_request_limit = ?,
+                viewer_request_limit = ?, subscriber_request_limit = ?, queue_max_size = ?,
                 setup_complete = ?, auto_copy_level_id = ?,
                 level_thumbnails = ?, thumbnail_quality = ?,
-                ws_enabled = ?, ws_port = ?, ws_secret = ?
+                ws_enabled = ?, ws_port = ?, ws_secret = ?,
+                gd_account_id = ?, gd_username = ?, gd_gjp2_enc = ?,
+                gd_icon_url = ?, gd_icon_b64 = ?,
+                queue_open = ?
              WHERE id = 1",
         )
         .bind(&self.auth.bot_username)         .bind(&self.auth.bot_access_token)
@@ -176,6 +213,7 @@ impl AppConfig {
         .bind(self.modes.smart as i64).bind(self.modes.youtube as i64)
         .bind(self.limits.viewer_request_limit as i64)
         .bind(self.limits.subscriber_request_limit as i64)
+        .bind(self.limits.max_queue_size as i64)
         .bind(self.setup_complete as i64)
         .bind(self.auto_copy_level_id as i64)
         .bind(self.level_thumbnails as i64)
@@ -183,6 +221,12 @@ impl AppConfig {
         .bind(self.ws.enabled as i64)
         .bind(self.ws.port as i64)
         .bind(&self.ws.secret)
+        .bind(self.gd_account.account_id)
+        .bind(&self.gd_account.username)
+        .bind(&self.gd_account.gjp2_enc)
+        .bind(&self.gd_account.icon_url)
+        .bind(&self.gd_account.icon_b64)
+        .bind(self.queue_open as i64)
         .execute(pool).await.context("failed to save config")?;
         Ok(())
     }

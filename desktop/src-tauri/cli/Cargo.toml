@@ -1,0 +1,23 @@
+[package]
+name = "gdlqbot-cli"
+version = "0.1.0"
+edition = "2021"
+description = "GD Level Request Bot — developer CLI"
+authors = ["Supernova3339"]
+
+[[bin]]
+name = "gdlqbcli"
+path = "src/main.rs"
+
+[dependencies]
+tokio       = { version = "1", features = ["full"] }
+reqwest     = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+clap        = { version = "4", features = ["derive", "color"] }
+anyhow      = "1"
+sha2        = "0.10"
+chrono      = { version = "0.4", features = ["serde"] }
+walkdir     = "2"
+urlencoding = "2"
+zip         = "2"

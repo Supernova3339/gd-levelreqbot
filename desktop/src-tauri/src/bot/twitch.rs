@@ -1,13 +1,15 @@
 #![allow(dead_code)]
 
 use crate::bot::dev::DevLogger;
+use crate::bot::eventsub::{self, RedemptionEvent};
 use crate::bot::platform::ChatPlatform;
+use crate::bot::twitch_api::{CustomReward, TwitchApiClient, TwitchUser};
 use crate::bot::ChatMessage;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, watch, RwLock};
 use tracing::{error, info, warn};
 use twitch_irc::{
     login::StaticLoginCredentials,
@@ -15,12 +17,33 @@ use twitch_irc::{
     ClientConfig, SecureTCPTransport, TwitchIRCClient,
 };
 
+/// Resolved once per connection: the Helix client plus the IDs it needs on
+/// every call (both come from the same token — moderator_id is the token
+/// owner, broadcaster_id is the channel being connected to).
+struct TwitchApiHandle {
+    client:         TwitchApiClient,
+    broadcaster_id: String,
+    moderator_id:   String,
+}
+
 pub struct TwitchBot {
     username: String,
     token: String,
     channel: String,
     client: RwLock<Option<TwitchIRCClient<SecureTCPTransport, StaticLoginCredentials>>>,
+    /// Helix API access — None until resolved post-connect, and stays None
+    /// (non-fatally) if the token predates the Helix scope set. Everything
+    /// that depends on it must degrade gracefully rather than error out.
+    api: RwLock<Option<Arc<TwitchApiHandle>>>,
     message_tx: broadcast::Sender<ChatMessage>,
+    /// Channel-point redemption events from EventSub. Populated regardless of
+    /// whether anything is currently subscribed — subscribers just call
+    /// `.subscribe()` before or after `connect()`, broadcast channels don't
+    /// care which came first as long as they're listening by the time an
+    /// event actually arrives.
+    redemption_tx: broadcast::Sender<RedemptionEvent>,
+    /// Signals the EventSub background task to stop. `true` = shut down.
+    eventsub_shutdown: RwLock<Option<watch::Sender<bool>>>,
     dev: Arc<DevLogger>,
     pub suppress_watermark: bool,
 }
@@ -34,7 +57,157 @@ impl TwitchBot {
         dev: Arc<DevLogger>,
         suppress_watermark: bool,
     ) -> Self {
-        Self { username, token, channel, client: RwLock::new(None), message_tx, dev, suppress_watermark }
+        let (redemption_tx, _) = broadcast::channel(64);
+        Self {
+            username, token, channel,
+            client: RwLock::new(None),
+            api: RwLock::new(None),
+            redemption_tx,
+            eventsub_shutdown: RwLock::new(None),
+            message_tx, dev, suppress_watermark,
+        }
+    }
+
+    /// True once the Helix handle has been resolved (announcements, user lookup, etc. available).
+    pub async fn helix_ready(&self) -> bool {
+        self.api.read().await.is_some()
+    }
+
+    /// Subscribe to channel-point redemption events. Safe to call at any time,
+    /// including before `connect()` — events just won't arrive until EventSub
+    /// has actually established a session (see `resolve_helix`).
+    pub fn subscribe_redemptions(&self) -> broadcast::Receiver<RedemptionEvent> {
+        self.redemption_tx.subscribe()
+    }
+
+    /// List this app's manageable custom channel-point rewards.
+    pub async fn list_rewards(&self) -> Result<Vec<CustomReward>> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.list_custom_rewards(&handle.broadcaster_id).await
+    }
+
+    /// Create a new custom channel-point reward. Requires `channel:manage:redemptions`.
+    pub async fn create_reward(&self, title: &str, cost: i64, prompt: &str) -> Result<CustomReward> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.create_custom_reward(&handle.broadcaster_id, title, cost, prompt).await
+    }
+
+    /// The connected channel's broadcaster user ID, once Helix is ready. Used to
+    /// resolve `is_broadcaster` for events (like redemptions) that only carry a
+    /// user_id, not IRC badges.
+    pub async fn broadcaster_id(&self) -> Option<String> {
+        self.api.read().await.as_ref().map(|h| h.broadcaster_id.clone())
+    }
+
+    /// True if `user_id` currently subscribes to the connected channel.
+    /// Requires `channel:read:subscriptions` — degrades to `false` (not an
+    /// error) if Helix isn't ready, same as the rest of this API surface.
+    pub async fn is_subscriber(&self, user_id: &str) -> Result<bool> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.check_subscription(&handle.broadcaster_id, user_id).await
+    }
+
+    /// Update an existing custom reward's title/cost/prompt/enabled state.
+    /// Icons can't be set through this API — Twitch dashboard only.
+    pub async fn update_reward(
+        &self, reward_id: &str,
+        title: Option<&str>, cost: Option<i64>, prompt: Option<&str>, is_enabled: Option<bool>,
+    ) -> Result<CustomReward> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.update_custom_reward(&handle.broadcaster_id, reward_id, title, cost, prompt, is_enabled).await
+    }
+
+    /// Delete a custom reward (must have been created by this app).
+    pub async fn delete_reward(&self, reward_id: &str) -> Result<()> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.delete_custom_reward(&handle.broadcaster_id, reward_id).await
+    }
+
+    /// Mark a redemption fulfilled (accepted) or canceled (refunded to the viewer).
+    pub async fn set_redemption_status(&self, reward_id: &str, redemption_id: &str, fulfilled: bool) -> Result<()> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.update_redemption_status(&handle.broadcaster_id, reward_id, redemption_id, fulfilled).await
+    }
+
+    /// Look up a user by login via Helix. Requires `helix_ready()`.
+    pub async fn get_user(&self, login: &str) -> Result<Option<TwitchUser>> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.get_user_by_login(login).await
+    }
+
+    /// Post a chat announcement (highlighted, colored message) via Helix.
+    /// Requires `helix_ready()` and the `moderator:manage:announcements` scope.
+    pub async fn send_announcement(&self, message: &str, color: Option<&str>) -> Result<()> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.send_announcement(&handle.broadcaster_id, &handle.moderator_id, message, color).await
+    }
+
+    /// Resolve the Helix handle (token owner + broadcaster IDs) after IRC connects.
+    /// Non-fatal on any failure — announcements etc. just stay unavailable.
+    async fn resolve_helix(&self) {
+        let raw_token = self.token.trim_start_matches("oauth:").to_string();
+        let api_client = TwitchApiClient::new(raw_token);
+
+        let self_user: TwitchUser = match api_client.get_self().await {
+            Ok(u) => u,
+            Err(e) => {
+                warn!("Twitch Helix: could not resolve token owner (non-fatal, missing scopes?): {e}");
+                return;
+            }
+        };
+
+        let broadcaster: TwitchUser = match api_client.get_user_by_login(&self.channel).await {
+            Ok(Some(u)) => u,
+            Ok(None) => {
+                warn!("Twitch Helix: channel '{}' not found — Helix features unavailable", self.channel);
+                return;
+            }
+            Err(e) => {
+                warn!("Twitch Helix: failed to resolve broadcaster id (non-fatal): {e}");
+                return;
+            }
+        };
+
+        self.dev.log("Twitch Helix API ready (announcements, user lookup available)".to_string());
+        let broadcaster_id = broadcaster.id.clone();
+        *self.api.write().await = Some(Arc::new(TwitchApiHandle {
+            client:         api_client.clone(),
+            broadcaster_id: broadcaster_id.clone(),
+            moderator_id:   self_user.id,
+        }));
+
+        // Channel-point redemptions: non-fatal to skip if the token predates the
+        // `channel:read:redemptions` scope — EventSub subscription itself will just
+        // fail and log, same degrade-gracefully approach as the rest of Helix here.
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        *self.eventsub_shutdown.write().await = Some(shutdown_tx);
+        let redemption_tx = self.redemption_tx.clone();
+        let dev = Arc::clone(&self.dev);
+        tokio::spawn(eventsub::run(api_client, broadcaster_id, redemption_tx, dev, shutdown_rx));
     }
 }
 
@@ -187,6 +360,8 @@ impl ChatPlatform for TwitchBot {
 
         *self.client.write().await = Some(client);
 
+        self.resolve_helix().await;
+
         if !self.suppress_watermark {
             if let Err(e) = self.send_message(
                 "Thank you for using GD Level Request Bot! - To remove this message, sponsor us on GitHub!"
@@ -200,6 +375,10 @@ impl ChatPlatform for TwitchBot {
 
     async fn disconnect(&self) -> Result<()> {
         *self.client.write().await = None;
+        *self.api.write().await = None;
+        if let Some(tx) = self.eventsub_shutdown.write().await.take() {
+            let _ = tx.send(true);
+        }
         self.dev.log("Disconnected from Twitch IRC".to_string());
         info!("Twitch: disconnected");
         Ok(())

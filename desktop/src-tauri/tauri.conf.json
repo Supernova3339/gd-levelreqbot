@@ -1,21 +1,24 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "GD Level Request Bot",
-  "version": "0.0.7",
+  "version": "0.1.0",
   "identifier": "com.supersoft.gdlqb",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "cargo build --manifest-path src-tauri/Cargo.toml -p gdlqbot-cli && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "cargo build --release --manifest-path src-tauri/Cargo.toml -p gdlqbot-cli && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "GD Level Request Bot",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "visible": false,
+        "backgroundColor": "#0f0f0f"
       }
     ],
     "security": {
@@ -27,6 +30,9 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "publisher": "Supernova Software, LLC",
+    "externalBin": [
+      "binaries/gdlqbcli"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -41,6 +47,27 @@
         ],
         "name": "GDLQScript",
         "description": "GD Level Queue Bot command script"
+      },
+      {
+        "ext": [
+          "gdmod"
+        ],
+        "name": "GDLQBotModule",
+        "description": "GD Level Request Bot module package"
+      },
+      {
+        "ext": [
+          "gdpck"
+        ],
+        "name": "GDLQBotPackage",
+        "description": "GD Level Request Bot package bundle"
+      },
+      {
+        "ext": [
+          "gdlib"
+        ],
+        "name": "GDLQBotLibrary",
+        "description": "GD Level Request Bot library package"
       }
     ]
   },
@@ -50,7 +77,15 @@
       "endpoints": [
         "https://dl.supers0ft.us/gdlvlreqbot/updates/"
       ],
-      "dialog": true
+      "dialog": false,
+      "windows": {
+        "installMode": "basicUi",
+        "installerArgs": [
+          "--silent",
+          "--accept-license",
+          "--kill-running"
+        ]
+      }
     }
   }
 }

@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy this file to release.config.json and fill in the values. release.config.json is gitignored.",
+  "server": "https://dl.supers0ft.us/gdlvlreqbot/updates",
+  "adminKey": "your-admin-key-here",
+  "assetsBaseUrl": "https://dl.supers0ft.us/gdlvlreqbot/dist",
+  "tauriConf": "../../desktop/src-tauri/tauri.conf.json",
+  "bundleDir": "../installer/dist"
+}

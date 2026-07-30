@@ -1,4 +1,4 @@
-﻿import {useEffect, useState} from "react";
+﻿import React, {useEffect, useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {getVersion} from "@tauri-apps/api/app";
 import {isSetupComplete, startBot} from "./lib/commands";
@@ -9,19 +9,34 @@ import {Layout} from "./components/Layout";
 import {ErrorBoundary} from "./components/ErrorBoundary";
 import {SettingsModal} from "./components/SettingsModal";
 import {ChangelogModal} from "./components/ChangelogModal";
-import {AboutModal} from "./components/AboutModal";
 import {PERF_EVENT, PERF_KEY, PerfOverlay} from "./components/PerfOverlay";
 import {ContextMenu} from "./components/ContextMenu";
-import {Dashboard} from "./pages/Dashboard";
-import {CommandsPage} from "./pages/CommandsPage";
-import {IntegrationsPage} from "./pages/IntegrationsPage";
-import {LibrariesPage} from "./pages/LibrariesPage";
-import {ConsolePage} from "./pages/ConsolePage";
+import {OpenedFileInstallListener} from "./components/OpenedFileInstallListener";
 import {Setup} from "./pages/Setup";
 import {KeybindContext, useKeybinds} from "./hooks/useKeybinds";
 // Import consoleStore at app startup so the "console-log" listener is registered immediately,
 // regardless of which page is open.
 import "./lib/consoleStore";
+// Preview remote-control bridge — defines window.__gdlqPreviewInput for the
+// JetBrains /preview stream input forwarding (see src-tauri/src/api/preview.rs).
+import "./lib/previewInput";
+
+// perf: lazy-load heavy page bundles so the initial shell loads fast.
+// Each page is only fetched when the user first navigates to it.
+const ModulesPage = React.lazy(() => import("./pages/ModulesPage").then((m) => ({default: m.ModulesPage})));
+const CommandsPage = React.lazy(() => import("./pages/CommandsPage").then((m) => ({default: m.CommandsPage})));
+const IntegrationsPage = React.lazy(() => import("./pages/IntegrationsPage").then((m) => ({default: m.IntegrationsPage})));
+const LibrariesPage = React.lazy(() => import("./pages/LibrariesPage").then((m) => ({default: m.LibrariesPage})));
+const ConsolePage = React.lazy(() => import("./pages/ConsolePage").then((m) => ({default: m.ConsolePage})));
+const ScreenshotTool = React.lazy(() => import("./components/dev/ScreenshotTool").then((m) => ({default: m.ScreenshotTool})));
+
+function PageFallback() {
+    return (
+        <div className="flex items-center justify-center h-full" style={{color: "#2a2a2a", fontSize: 12}}>
+            Loading…
+        </div>
+    );
+}
 
 type AppState = "loading" | "setup" | "main" | "demo";
 
@@ -67,7 +82,6 @@ async function tryStartBot() {
 export default function App() {
     const [appState, setAppState] = useState<AppState>("loading");
     const [settingsOpen, setSettingsOpen] = useState(false);
-    const [aboutOpen, setAboutOpen] = useState(false);
     const [changelogOpen, setChangelogOpen] = useState(false);
     const [changelogAuto, setChangelogAuto] = useState(false);
     const [appVersion, setAppVersion] = useState("");
@@ -126,6 +140,20 @@ export default function App() {
             if (done) {
                 setAppState("main");
                 tryStartBot();
+                // Install marketplace modules accepted on the installer's
+                // "optional extras" page (one-shot; the backend clears the list).
+                invoke<string[]>("take_pending_module_installs").then(async (ids) => {
+                    if (!ids.length) return;
+                    const {installMarketplaceModule} = await import("./lib/commands");
+                    for (const id of ids) {
+                        try {
+                            await installMarketplaceModule(id);
+                        } catch (err) {
+                            console.error(`[app] offer install failed for ${id}:`, err);
+                        }
+                    }
+                }).catch(() => { /* non-fatal */
+                });
                 // Check if this is a new version to show What's New
                 try {
                     const [current, lastSeen] = await Promise.all([
@@ -158,8 +186,6 @@ export default function App() {
         setAppState("setup");
     };
 
-    const openAbout = () => setAboutOpen(true);
-
     const openChangelog = async () => {
         if (!appVersion) {
             const v = await getVersion().catch(() => "");
@@ -167,6 +193,11 @@ export default function App() {
         }
         setChangelogAuto(false);
         setChangelogOpen(true);
+    };
+
+    const openChangelogFromSettings = async () => {
+        setSettingsOpen(false);
+        await openChangelog();
     };
 
     const closeChangelog = async () => {
@@ -219,26 +250,29 @@ export default function App() {
                             </div>
                         )}
                         <div className="flex-1 min-h-0">
-                            <Layout onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={openAbout}>
+                            <Layout onOpenSettings={() => setSettingsOpen(true)}>
                                 {(page) => (
                                     <ErrorBoundary label={page}>
-                                        {page === "commands" && <CommandsPage/>}
-                                        {page === "integrations" && <IntegrationsPage/>}
-                                        {page === "libraries" && <LibrariesPage/>}
-                                        {page === "console" && <ConsolePage/>}
-                                        {page === "queue" && <Dashboard demo={isDemo}/>}
+                                        <React.Suspense fallback={<PageFallback/>}>
+                                            {page === "commands" && <CommandsPage/>}
+                                            {page === "integrations" && <IntegrationsPage/>}
+                                            {page === "libraries" && <LibrariesPage/>}
+                                            {page === "console" && <ConsolePage/>}
+                                            {page === "modules" && <ModulesPage/>}
+                                            {page === "screenshot" && <ScreenshotTool moduleId="" pages={[]}/>}
+                                        </React.Suspense>
                                     </ErrorBoundary>
                                 )}
                             </Layout>
                         </div>
-                        <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} keybinds={keybinds}/>
-                        <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)}
-                                    onShowChangelog={openChangelog}/>
+                        <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)}
+                                       onShowChangelog={openChangelogFromSettings} keybinds={keybinds}/>
                         <ChangelogModal open={changelogOpen} onClose={closeChangelog}
                                         appVersion={appVersion} autoVersion={changelogAuto}/>
                         <LevelCopiedOverlay/>
                         {perfOn && <PerfOverlay/>}
                         <ContextMenu/>
+                        <OpenedFileInstallListener/>
                     </div>
                 </SnackbarProvider>
             </ConfirmProvider>

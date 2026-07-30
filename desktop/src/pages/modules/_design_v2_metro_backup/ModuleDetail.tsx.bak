@@ -1,0 +1,1620 @@
+﻿import { useCallback, useEffect, useRef, useState } from "react";
+import type { CatalogEntry } from "./useMarketplace";
+import { type AccountState, roleAtLeast } from "./useAccount";
+import type { InstallProgress } from "../ModulesPage";
+import {
+    mpApprove, mpDeny, mpUpdateMeta, mpAddRelease, mpFetchReleases,
+    mpPublish, mpDeleteModule, mpUploadResource, mpDeleteResource, mpReportModule,
+    mpFetchPackageOwners, mpAddPackageOwner, mpRemovePackageOwner, mpSearchUsers,
+    mpMyTeams, mpSetOwnerTeam,
+    type Release, type ResourceRecord, type ReportReason, type PackageOwner, type UserSearchResult, type Team,
+} from "./marketplace-api";
+import { getLicenseToken, getCommands, preflightModule, type BotCommand, type PreflightIssue } from "../../lib/commands";
+import { iconColor } from "./icons";
+import { ModuleFeedback } from "./ModuleFeedback";
+import { ReportModal, MCategoryField } from "./shared";
+import type { MarketplaceCategory } from "./marketplace-api";
+import { createPortal } from "react-dom";
+import { computePosition, flip, offset, shift } from "@floating-ui/dom";
+
+// ── Primitives ────────────────────────────────────────────────────────────────
+
+function Chip({ label, color, accent }: { label: string; color?: string; accent?: boolean }) {
+    return (
+        <span style={{
+            fontSize: 9, fontWeight: 700, letterSpacing: "0.05em",
+            textTransform: "uppercase" as const,
+            padding: "2px 7px", borderRadius: 0,
+            backgroundColor: accent
+                ? "color-mix(in srgb, var(--color-accent) 14%, transparent)"
+                : color ? `${color}18` : "#1a1a1a",
+            color: accent ? "var(--color-accent)" : color ?? "#3a3a3a",
+            border: `1px solid ${accent
+                ? "color-mix(in srgb, var(--color-accent) 25%, transparent)"
+                : color ? `${color}44` : "#222"}`,
+        }}>
+            {label}
+        </span>
+    );
+}
+
+/** Shared tab strip — used both for the detail pane's top-level tabs and the
+ *  Manage tab's edit/release/resources/team sub-tabs (smaller variant). */
+function TabStrip<T extends string>({ tabs, active, onChange, small }: {
+    tabs: { key: T; label: string }[]; active: T; onChange: (t: T) => void; small?: boolean;
+}) {
+    return (
+        <div style={{ display: "flex", gap: small ? 6 : 2, borderBottom: small ? "none" : "1px solid #161616", marginBottom: small ? 16 : 18 }}>
+            {tabs.map(t => {
+                const isActive = t.key === active;
+                return small ? (
+                    <button key={t.key} className="mp-metro-tile" onClick={() => onChange(t.key)} style={{
+                        "--mp-bg": isActive ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+                        "--mp-bg-hover": isActive ? "color-mix(in srgb, var(--color-accent) 18%, transparent)" : "var(--color-bg-hover)",
+                        "--mp-bg-press": isActive ? "color-mix(in srgb, var(--color-accent) 24%, transparent)" : "var(--color-bg-surface)",
+                        padding: "6px 14px", fontSize: 11.5, fontWeight: isActive ? 700 : 500,
+                        color: isActive ? "var(--color-accent)" : "#666",
+                        border: `1px solid ${isActive ? "color-mix(in srgb, var(--color-accent) 28%, transparent)" : "#222"}`,
+                        borderRadius: 0, cursor: "pointer", transition: "border-color 0.1s, color 0.1s",
+                    } as React.CSSProperties}>
+                        {t.label}
+                    </button>
+                ) : (
+                    <button key={t.key} onClick={() => onChange(t.key)} style={{
+                        padding: "8px 14px", fontSize: 12, fontWeight: isActive ? 700 : 500,
+                        color: isActive ? "#ccc" : "#444",
+                        background: "none", border: "none", cursor: "pointer",
+                        borderBottom: `2px solid ${isActive ? "var(--color-accent)" : "transparent"}`,
+                        marginBottom: -1, transition: "color 0.1s",
+                    }}>
+                        {t.label}
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
+// ── Action button ─────────────────────────────────────────────────────────────
+
+type BtnVariant = "primary" | "ghost" | "danger" | "warn";
+
+function ActionBtn({
+    label, variant = "ghost", loading, disabled, small, onClick, title,
+}: {
+    label: string; variant?: BtnVariant;
+    loading?: boolean; disabled?: boolean; small?: boolean; onClick: () => void; title?: string;
+}) {
+    const styles: Record<BtnVariant, React.CSSProperties> = {
+        primary: { backgroundColor: "var(--color-accent)", color: "#fff", border: "none" },
+        ghost:   { backgroundColor: "transparent", color: "#555", border: "1px solid #252525" },
+        danger:  { backgroundColor: "transparent", color: "#ef4444", border: "1px solid #3a1a1a" },
+        warn:    { backgroundColor: "transparent", color: "#f59e0b", border: "1px solid #78350f44" },
+    };
+    // Hover/press feedback per variant, driven by the same --mp-bg-hover/press
+    // custom properties the .mp-metro-tile rule reads (see MetroStyles) — a
+    // ghost/danger/warn button has a transparent resting fill, so hovering it
+    // should reveal a faint tint, not just an opacity fade.
+    const hoverBg: Record<BtnVariant, string> = {
+        primary: "var(--color-accent-hover)", ghost: "var(--color-bg-hover)",
+        danger: "#2a1414", warn: "#2a1f08",
+    };
+    const pressBg: Record<BtnVariant, string> = {
+        primary: "var(--color-accent-hover)", ghost: "var(--color-bg-surface)",
+        danger: "#3a1a1a", warn: "#3a2a0c",
+    };
+    return (
+        <button
+            className="mp-metro-tile"
+            onClick={onClick}
+            disabled={disabled || loading}
+            title={title}
+            style={{
+                "--mp-bg": styles[variant].backgroundColor, "--mp-bg-hover": hoverBg[variant], "--mp-bg-press": pressBg[variant],
+                padding: small ? "4px 12px" : "6px 18px",
+                fontSize: small ? 11 : 12,
+                fontWeight: 600, borderRadius: 0, cursor: disabled || loading ? "not-allowed" : "pointer",
+                opacity: disabled || loading ? 0.4 : 1,
+                transition: "opacity 0.1s",
+                flexShrink: 0,
+                ...styles[variant],
+                backgroundColor: undefined,
+            } as React.CSSProperties}
+        >
+            {loading ? "…" : label}
+        </button>
+    );
+}
+
+// ── Progress bar ──────────────────────────────────────────────────────────────
+
+const PROGRESS_LABELS: Record<string, string> = {
+    resolving:   "Resolving…",
+    downloading: "Downloading…",
+    installing:  "Installing…",
+    removing:    "Removing…",
+};
+
+function ProgressBar({ progress }: { progress: InstallProgress }) {
+    const label = PROGRESS_LABELS[progress.state] ?? progress.state;
+    const msg   = progress.message;
+
+    const isIndeterminate = progress.state !== "downloading" || !msg;
+
+    return (
+        <div style={{
+            margin: "14px 0",
+            padding: "10px 14px",
+            backgroundColor: "#0d0d0d",
+            border: "1px solid #1a1a1a",
+            borderRadius: 0,
+        }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span style={{ fontSize: 11, color: "#555" }}>{label}</span>
+                {msg && <span style={{ fontSize: 10, color: "#333", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{msg}</span>}
+            </div>
+            <div style={{ height: 3, backgroundColor: "#1a1a1a", borderRadius: 0, overflow: "hidden" }}>
+                {isIndeterminate ? (
+                    <>
+                        <div style={{
+                            height: "100%",
+                            background: "linear-gradient(90deg, transparent, var(--color-accent)88, var(--color-accent), var(--color-accent)88, transparent)",
+                            backgroundSize: "200% 100%",
+                            animation: "detail-sweep 1.4s ease-in-out infinite",
+                        }}/>
+                        <style>{`@keyframes detail-sweep{0%{background-position:100% 0}100%{background-position:-100% 0}}`}</style>
+                    </>
+                ) : (
+                    <div style={{
+                        height: "100%",
+                        width: "60%",
+                        background: `linear-gradient(to right, var(--color-accent)66, var(--color-accent))`,
+                        borderRadius: 0,
+                        animation: "detail-sweep 1.4s ease-in-out infinite",
+                        backgroundSize: "200% 100%",
+                    }}/>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// ── Empty state ───────────────────────────────────────────────────────────────
+
+export function ModuleDetailEmpty() {
+    return (
+        <div style={{
+            display: "flex", flexDirection: "column", alignItems: "center",
+            justifyContent: "center", height: "100%", gap: 12,
+            color: "#1e1e1e",
+        }}>
+            <svg width="44" height="44" viewBox="0 0 44 44" fill="none">
+                <rect x="5" y="5" width="15" height="15" rx="3" stroke="currentColor" strokeWidth="1.5"/>
+                <rect x="24" y="5" width="15" height="15" rx="3" stroke="currentColor" strokeWidth="1.5"/>
+                <rect x="5" y="24" width="15" height="15" rx="3" stroke="currentColor" strokeWidth="1.5"/>
+                <rect x="24" y="24" width="15" height="15" rx="3" stroke="currentColor" strokeWidth="1.5"/>
+            </svg>
+            <div style={{ textAlign: "center" }}>
+                <p style={{ fontSize: 13, fontWeight: 600, color: "#252525" }}>Pick a package</p>
+                <p style={{ fontSize: 11, color: "#1e1e1e", marginTop: 3 }}>Select one from the list to see details</p>
+            </div>
+        </div>
+    );
+}
+
+// ── Deny modal ────────────────────────────────────────────────────────────────
+
+function DenyModal({ onConfirm, onCancel }: { onConfirm: (reason: string) => void; onCancel: () => void }) {
+    const [reason, setReason] = useState("");
+    return (
+        <div style={{
+            position: "fixed", inset: 0, zIndex: 999,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            backgroundColor: "rgba(0,0,0,0.6)",
+        }} onClick={e => { if (e.target === e.currentTarget) onCancel(); }}>
+            <div style={{
+                backgroundColor: "#111", border: "1px solid #222",
+                borderRadius: 0, padding: "20px 24px", width: 360,
+            }}>
+                <p style={{ fontSize: 13, fontWeight: 600, color: "#bbb", marginBottom: 12 }}>Deny submission</p>
+                <textarea
+                    autoFocus rows={4} value={reason}
+                    onChange={e => setReason(e.target.value)}
+                    placeholder="Reason for denial…"
+                    style={{ ...inputStyle, width: "100%", boxSizing: "border-box" as const, marginBottom: 12, resize: "vertical" as const }}
+                />
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                    <ActionBtn label="Cancel" variant="ghost" small onClick={onCancel}/>
+                    <ActionBtn label="Deny" variant="danger" small disabled={!reason.trim()} onClick={() => onConfirm(reason)}/>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ── Release history ───────────────────────────────────────────────────────────
+
+/** Lives in its own dedicated Releases tab now — no reason to also make the
+ *  user click to expand it within that tab, so it just loads on mount. */
+function ReleaseHistory({ id }: { id: string }) {
+    const [releases, setReleases] = useState<Release[]>([]);
+    const [loading, setLoading]   = useState(true);
+
+    useEffect(() => {
+        let cancelled = false;
+        setLoading(true);
+        mpFetchReleases(id)
+            .then(r => { if (!cancelled) setReleases(r); })
+            .catch(() => { /* offline */ })
+            .finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
+    }, [id]);
+
+    return (
+        <div>
+            {loading ? (
+                <p style={{ fontSize: 11, color: "#2a2a2a" }}>Loading…</p>
+            ) : releases.length === 0 ? (
+                <p style={{ fontSize: 11, color: "#2a2a2a" }}>No releases yet</p>
+            ) : (
+                <div>
+                    {releases.map((r, i) => (
+                            <div key={r.version} style={{
+                                paddingBottom: 12, marginBottom: i < releases.length - 1 ? 12 : 0,
+                                borderBottom: i < releases.length - 1 ? "1px solid #0f0f0f" : "none",
+                            }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                                    <span style={{ fontSize: 11, fontWeight: 700, color: "#555" }}>v{r.version}</span>
+                                    {i === 0 && <Chip label="Latest" accent/>}
+                                    <span style={{ fontSize: 10, color: "#252525" }}>
+                                        {new Date(r.pub_date).toLocaleDateString()}
+                                    </span>
+                                </div>
+                                {r.changelog ? (
+                                    <pre style={{
+                                        fontSize: 11, color: "#333", lineHeight: 1.5,
+                                        whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0,
+                                    }}>{r.changelog}</pre>
+                                ) : (
+                                    <span style={{ fontSize: 11, color: "#252525", fontStyle: "italic" }}>No changelog</span>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
+        </div>
+    );
+}
+
+// ── Edit metadata form ────────────────────────────────────────────────────────
+
+interface MetaForm { name: string; description: string; icon: string; color: string; tags: string; category: MarketplaceCategory | undefined; }
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+function EditMetaPanel({ entry, onSaved, onCancel }: {
+    entry: CatalogEntry; onSaved: () => void; onCancel: () => void;
+}) {
+    const [form, setForm] = useState<MetaForm>({
+        name:        entry.name,
+        description: entry.description,
+        icon:        entry.icon,
+        color:       entry.color ?? "",
+        tags:        (entry.tags ?? []).join(", "),
+        category:    (entry.category ?? undefined) as MarketplaceCategory | undefined,
+    });
+    const [saving, setSaving] = useState(false);
+    const [err, setErr]       = useState<string | null>(null);
+
+    const colorValid = form.color.trim() === "" || HEX_COLOR_RE.test(form.color.trim());
+
+    const save = async () => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        if (!colorValid) { setErr("Color must be a 6-digit hex code like #7c3aed"); return; }
+        setSaving(true); setErr(null);
+        try {
+            await mpUpdateMeta(entry.marketplaceId, {
+                name:        form.name.trim(),
+                description: form.description.trim(),
+                icon:        form.icon.trim(),
+                color:       form.color.trim() || null,
+                tags:        form.tags.split(",").map(t => t.trim()).filter(Boolean),
+                category:    form.category ?? null,
+            }, token);
+            onSaved();
+        } catch (e) { setErr(String(e)); }
+        finally { setSaving(false); }
+    };
+
+    return (
+        <div style={{ marginTop: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "0 12px", marginBottom: 14 }}>
+                <div>
+                    <FieldLabel>Name</FieldLabel>
+                    <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} style={inputStyle}/>
+                </div>
+                <div>
+                    <FieldLabel>Icon</FieldLabel>
+                    <input value={form.icon} onChange={e => setForm(f => ({ ...f, icon: e.target.value }))} style={inputStyle}/>
+                </div>
+                <div>
+                    <FieldLabel>Accent color</FieldLabel>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <span style={{
+                            width: 30, height: 30, borderRadius: 0, flexShrink: 0,
+                            border: "1px solid #222",
+                            backgroundColor: colorValid && form.color.trim() ? form.color.trim() : "#161616",
+                        }}/>
+                        <input value={form.color} placeholder="#7c3aed"
+                            onChange={e => setForm(f => ({ ...f, color: e.target.value }))}
+                            style={{ ...inputStyle, borderColor: colorValid ? undefined : "#ef4444" }}/>
+                    </div>
+                </div>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+                <FieldLabel>Description</FieldLabel>
+                <textarea rows={4} value={form.description}
+                    onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                    style={{ ...inputStyle, resize: "vertical" as const }}/>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+                <FieldLabel>Tags (comma-separated)</FieldLabel>
+                <input value={form.tags} onChange={e => setForm(f => ({ ...f, tags: e.target.value }))} style={inputStyle}/>
+            </div>
+
+            <div style={{ marginBottom: 18 }}>
+                <MCategoryField value={form.category} onChange={v => setForm(f => ({ ...f, category: v }))}/>
+            </div>
+
+            {err && <p style={{ fontSize: 11, color: "#ef4444", marginBottom: 10 }}>{err}</p>}
+            <div style={{ display: "flex", gap: 8 }}>
+                <ActionBtn label="Save changes" variant="primary" small loading={saving} onClick={save}/>
+                <ActionBtn label="Cancel" variant="ghost" small onClick={onCancel}/>
+            </div>
+        </div>
+    );
+}
+
+// ── Add release form ──────────────────────────────────────────────────────────
+
+type ReleaseSourceType = "direct" | "github";
+
+function AddReleasePanel({ entry, onSaved, onCancel }: {
+    entry: CatalogEntry; onSaved: () => void; onCancel: () => void;
+}) {
+    const [source, setSource]           = useState<ReleaseSourceType>("github");
+    const [version, setVersion]         = useState("");
+    const [downloadUrl, setDownloadUrl] = useState("");
+    const [checksum, setChecksum]       = useState("");
+    const [changelog, setChangelog]     = useState("");
+    const [ghRepo, setGhRepo]           = useState("");
+    const [ghDir, setGhDir]             = useState("");
+    const [ghTag, setGhTag]             = useState("");
+    const [saving, setSaving]           = useState(false);
+    const [err, setErr]                 = useState<string | null>(null);
+
+    const save = async () => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setSaving(true); setErr(null);
+        try {
+            if (source === "github") {
+                if (!ghRepo.trim()) { setErr("GitHub repo is required (owner/repo)"); setSaving(false); return; }
+                await mpAddRelease(entry.marketplaceId, {
+                    source_type: "github", github_repo: ghRepo.trim(),
+                    github_dir:  ghDir.trim() || undefined,
+                    github_tag:  ghTag.trim() || undefined,
+                    version:     version.trim() || undefined,
+                    changelog:   changelog.trim() || undefined,
+                }, token);
+            } else {
+                if (!version.trim() || !downloadUrl.trim()) { setErr("Version and download URL are required."); setSaving(false); return; }
+                await mpAddRelease(entry.marketplaceId, {
+                    version: version.trim(), download_url: downloadUrl.trim(),
+                    checksum: checksum.trim(), changelog: changelog.trim(),
+                }, token);
+            }
+            onSaved();
+        } catch (e) { setErr(String(e)); }
+        finally { setSaving(false); }
+    };
+
+    const field = (label: string, value: string, onChange: (v: string) => void, placeholder?: string, multi?: boolean) => (
+        <div style={{ marginBottom: 14 }}>
+            <FieldLabel>{label}</FieldLabel>
+            {multi
+                ? <textarea rows={3} value={value} placeholder={placeholder} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, resize: "vertical" as const }}/>
+                : <input value={value} placeholder={placeholder} onChange={e => onChange(e.target.value)} style={inputStyle}/>
+            }
+        </div>
+    );
+
+    return (
+        <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+                {(["github", "direct"] as ReleaseSourceType[]).map(t => (
+                    <button key={t} onClick={() => setSource(t)} style={{
+                        padding: "6px 14px", fontSize: 11, fontWeight: 600, borderRadius: 0, cursor: "pointer",
+                        background: source === t ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+                        color: source === t ? "var(--color-accent)" : "#555",
+                        border: `1px solid ${source === t ? "color-mix(in srgb, var(--color-accent) 28%, transparent)" : "#222"}`,
+                    }}>
+                        {t === "github" ? "GitHub" : "Direct URL"}
+                    </button>
+                ))}
+            </div>
+            {source === "github" ? (
+                <>
+                    {field("Repo (owner/repo)", ghRepo, setGhRepo, "GD-LevelReqBot/marketplace")}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
+                        {field("Dist path (within repo)", ghDir, setGhDir, "dist/my-module/1.0.0")}
+                        {field("Tag (optional)", ghTag, setGhTag, "v1.2.3")}
+                    </div>
+                    {field("Override version (optional)", version, setVersion, "auto from tag")}
+                    {field("Override changelog (optional)", changelog, setChangelog, "Leave blank to pull from release notes", true)}
+                </>
+            ) : (
+                <>
+                    {field("Version", version, setVersion, "1.2.3")}
+                    {field("Download URL", downloadUrl, setDownloadUrl, "https://…/package.gdmod")}
+                    {field("SHA-256 checksum (optional)", checksum, setChecksum)}
+                    {field("Changelog", changelog, setChangelog, "What's new…", true)}
+                </>
+            )}
+            {err && <p style={{ fontSize: 11, color: "#ef4444", marginBottom: 10 }}>{err}</p>}
+            <div style={{ display: "flex", gap: 8 }}>
+                <ActionBtn label="Publish release" variant="primary" small loading={saving} onClick={save}/>
+                <ActionBtn label="Cancel" variant="ghost" small onClick={onCancel}/>
+            </div>
+        </div>
+    );
+}
+
+// ── Resource panel ────────────────────────────────────────────────────────────
+
+/** Recommended dimensions per resource type — shown as guidance and used to
+ *  soft-warn (not block) on upload if the picked image is way off. */
+const RESOURCE_GUIDANCE: Record<ResourceRecord["resource_type"], { recommended: string; ratio?: number; ratioLabel?: string }> = {
+    icon:       { recommended: "512×512px, square",              ratio: 1,     ratioLabel: "1:1" },
+    screenshot: { recommended: "1280×720px or larger",            ratio: 16/9,  ratioLabel: "16:9" },
+    banner:     { recommended: "1920×480px, wide",                ratio: 4,     ratioLabel: "4:1" },
+    asset:      { recommended: "Any size — bundled file, not shown in the catalog" },
+};
+
+const RESOURCE_TYPE_ORDER: ResourceRecord["resource_type"][] = ["icon", "banner", "screenshot", "asset"];
+
+function readImageDimensions(file: File): Promise<{ width: number; height: number } | null> {
+    return new Promise(resolve => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => { resolve({ width: img.naturalWidth, height: img.naturalHeight }); URL.revokeObjectURL(url); };
+        img.onerror = () => { resolve(null); URL.revokeObjectURL(url); };
+        img.src = url;
+    });
+}
+
+function formatBytes(n: number): string {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+interface PendingUpload { file: File; width: number; height: number; warning: string; }
+
+function ResourcePanel({ entry, onCancel }: { entry: CatalogEntry; onCancel: () => void }) {
+    const [uploading, setUploading] = useState(false);
+    const [err, setErr]             = useState<string | null>(null);
+    const [resources, setResources] = useState<ResourceRecord[]>((entry.resources ?? []) as ResourceRecord[]);
+    const [dims, setDims]           = useState<Record<number, { width: number; height: number }>>({});
+    const [pending, setPending]     = useState<PendingUpload | null>(null);
+    const fileRef   = useRef<HTMLInputElement>(null);
+    const [type, setType] = useState<ResourceRecord["resource_type"]>("screenshot");
+
+    const doUpload = async (file: File) => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setUploading(true); setErr(null); setPending(null);
+        try { const rec = await mpUploadResource(entry.marketplaceId, file, type, token); setResources(r => [...r, rec]); }
+        catch (e) { setErr(String(e)); }
+        finally { setUploading(false); }
+    };
+
+    const onFilePicked = async (file: File) => {
+        setErr(null);
+        const size = await readImageDimensions(file);
+        const guidance = RESOURCE_GUIDANCE[type];
+        if (size && guidance.ratio) {
+            const actualRatio = size.width / size.height;
+            const off = Math.abs(actualRatio - guidance.ratio) / guidance.ratio;
+            if (off > 0.2) { // >20% off the target aspect ratio — worth flagging, not blocking
+                setPending({
+                    file, width: size.width, height: size.height,
+                    warning: `This image is ${size.width}×${size.height} (${actualRatio >= 1 ? (actualRatio).toFixed(2) : `1:${(1 / actualRatio).toFixed(2)}`}) — ${type} is recommended around ${guidance.ratioLabel}, ${guidance.recommended}.`,
+                });
+                return;
+            }
+        }
+        doUpload(file);
+    };
+
+    const del = async (id: number) => {
+        const token = await getLicenseToken();
+        if (!token) return;
+        try { await mpDeleteResource(entry.marketplaceId, id, token); setResources(r => r.filter(x => x.id !== id)); }
+        catch (e) { setErr(String(e)); }
+    };
+
+    const grouped = RESOURCE_TYPE_ORDER
+        .map(t => ({ type: t, items: resources.filter(r => r.resource_type === t) }))
+        .filter(g => g.items.length > 0);
+
+    return (
+        <div style={{ marginTop: 14 }}>
+            <FieldLabel>Uploaded assets</FieldLabel>
+            {grouped.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 18 }}>
+                    {grouped.map(g => (
+                        <div key={g.type}>
+                            <div style={{ fontSize: 10, fontWeight: 600, color: "#3a3a3a", textTransform: "capitalize" as const, marginBottom: 6 }}>
+                                {g.type} <span style={{ color: "#252525" }}>({g.items.length})</span>
+                            </div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                                {g.items.map(r => (
+                                    <div key={r.id} style={{ width: g.type === "banner" ? 180 : 100 }}>
+                                        <div style={{ position: "relative" }}>
+                                            <img src={r.url} alt={r.filename}
+                                                onLoad={e => {
+                                                    const t = e.currentTarget;
+                                                    setDims(d => d[r.id] ? d : { ...d, [r.id]: { width: t.naturalWidth, height: t.naturalHeight } });
+                                                }}
+                                                style={{
+                                                    width: "100%", height: g.type === "icon" ? 100 : g.type === "banner" ? 45 : 72,
+                                                    objectFit: "cover" as const, borderRadius: 0, border: "1px solid #222", display: "block",
+                                                    backgroundColor: "#0a0a0a",
+                                                }}/>
+                                            <button onClick={() => del(r.id)} title="Remove" style={{
+                                                position: "absolute", top: 4, right: 4,
+                                                width: 18, height: 18, borderRadius: 0, fontSize: 10, fontWeight: 700,
+                                                backgroundColor: "rgba(0,0,0,0.7)", color: "#f87171", border: "1px solid #ef444455", cursor: "pointer", lineHeight: 1,
+                                            }}>✕</button>
+                                        </div>
+                                        <p style={{
+                                            fontSize: 9, color: "#333", margin: "4px 0 0", whiteSpace: "nowrap",
+                                            overflow: "hidden", textOverflow: "ellipsis",
+                                        }} title={r.filename}>
+                                            {r.filename || "—"}
+                                        </p>
+                                        {dims[r.id] && (
+                                            <p style={{ fontSize: 9, color: "#252525", margin: "1px 0 0" }}>
+                                                {dims[r.id].width}×{dims[r.id].height}
+                                            </p>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                <p style={{ fontSize: 11, color: "#2a2a2a", marginBottom: 16 }}>No screenshots, banners, or assets uploaded yet.</p>
+            )}
+
+            <FieldLabel>Upload as</FieldLabel>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+                {/* "asset" intentionally hidden — assets are bundled inside the module's
+                    own package (.gdmod), not uploaded as a separate marketplace resource. */}
+                {(["screenshot", "banner", "icon"] as ResourceRecord["resource_type"][]).map(t => (
+                    <button key={t} onClick={() => { setType(t); setPending(null); }} style={{
+                        fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 0, cursor: "pointer",
+                        textTransform: "capitalize" as const,
+                        backgroundColor: type === t ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+                        color: type === t ? "var(--color-accent)" : "#555",
+                        border: `1px solid ${type === t ? "color-mix(in srgb, var(--color-accent) 28%, transparent)" : "#222"}`,
+                    }}>{t}</button>
+                ))}
+            </div>
+            <p style={{ fontSize: 10, color: "#333", marginBottom: 14 }}>
+                Recommended: {RESOURCE_GUIDANCE[type].recommended}
+            </p>
+
+            {pending && (
+                <div style={{
+                    marginBottom: 14, padding: "10px 12px", borderRadius: 0,
+                    backgroundColor: "#130e00", border: "1px solid #3a280033",
+                }}>
+                    <p style={{ fontSize: 11, color: "#fbbf2488", lineHeight: 1.5, margin: "0 0 8px" }}>
+                        ⚠ {pending.warning} ({formatBytes(pending.file.size)})
+                    </p>
+                    <div style={{ display: "flex", gap: 8 }}>
+                        <ActionBtn label="Upload anyway" variant="warn" small loading={uploading} onClick={() => doUpload(pending.file)}/>
+                        <ActionBtn label="Pick a different image" variant="ghost" small onClick={() => { setPending(null); fileRef.current?.click(); }}/>
+                    </div>
+                </div>
+            )}
+
+            <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) onFilePicked(f); e.target.value = ""; }}/>
+            {err && <p style={{ fontSize: 11, color: "#ef4444", marginBottom: 10 }}>{err}</p>}
+            <div style={{ display: "flex", gap: 8 }}>
+                <ActionBtn label={uploading ? "Uploading…" : `Upload ${type}`} variant="primary" small
+                    loading={uploading} disabled={!!pending} onClick={() => fileRef.current?.click()}/>
+                <ActionBtn label="Done" variant="ghost" small onClick={onCancel}/>
+            </div>
+        </div>
+    );
+}
+
+// ── Username search (co-owner picker) ───────────────────────────────────────
+
+/** Debounced username autocomplete, floating-ui + portal — matches the app's
+ *  other floating menus (Select, AccountWidget) instead of a native input. */
+function UserSearchField({ onPick, disabled }: { onPick: (u: UserSearchResult) => void; disabled?: boolean }) {
+    const [query, setQuery] = useState("");
+    const [results, setResults] = useState<UserSearchResult[]>([]);
+    const [searching, setSearching] = useState(false);
+    const [open, setOpen] = useState(false);
+    const [pos, setPos] = useState({ top: -9999, left: -9999, width: 0 });
+    const inputRef = useRef<HTMLInputElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
+    const reqId = useRef(0);
+
+    const reposition = useCallback(() => {
+        if (!inputRef.current || !menuRef.current) return;
+        computePosition(inputRef.current, menuRef.current, {
+            placement: "bottom-start",
+            middleware: [offset(4), flip(), shift({ padding: 8 })],
+        }).then(({ x, y }) => setPos({ top: y, left: x, width: inputRef.current!.offsetWidth }));
+    }, []);
+
+    useEffect(() => {
+        const q = query.trim();
+        if (q.length < 2) { setResults([]); setOpen(false); return; }
+        const id = ++reqId.current;
+        setSearching(true);
+        const t = setTimeout(async () => {
+            const token = await getLicenseToken();
+            if (!token) { setSearching(false); return; }
+            try {
+                const r = await mpSearchUsers(q, token);
+                if (id === reqId.current) { setResults(r); setOpen(true); }
+            } catch { /* transient search failure — just show no results */ }
+            finally { if (id === reqId.current) setSearching(false); }
+        }, 250);
+        return () => clearTimeout(t);
+    }, [query]);
+
+    useEffect(() => {
+        if (!open) return;
+        reposition();
+        const close = (e: MouseEvent) => {
+            if (!menuRef.current?.contains(e.target as Node) && !inputRef.current?.contains(e.target as Node)) setOpen(false);
+        };
+        document.addEventListener("mousedown", close);
+        return () => document.removeEventListener("mousedown", close);
+    }, [open, reposition, results]);
+
+    const pick = (u: UserSearchResult) => {
+        onPick(u);
+        setQuery("");
+        setResults([]);
+        setOpen(false);
+    };
+
+    return (
+        <div style={{ position: "relative", flex: 1 }}>
+            <input
+                ref={inputRef}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                onFocus={() => { if (results.length > 0) setOpen(true); }}
+                placeholder="Search by GitHub username…"
+                disabled={disabled}
+                style={{ ...inputStyle, width: "auto" }}
+            />
+            {open && createPortal(
+                <div ref={menuRef} style={{
+                    position: "fixed", top: pos.top, left: pos.left, minWidth: pos.width, zIndex: 9999,
+                    backgroundColor: "#111", border: "1px solid #242424", borderRadius: 0,
+                    padding: "4px 0", maxHeight: 220, overflowY: "auto",
+                    boxShadow: "0 12px 32px rgba(0,0,0,0.8)",
+                }}>
+                    {searching && <div style={{ padding: "6px 10px", fontSize: 11, color: "#444" }}>Searching…</div>}
+                    {!searching && results.length === 0 && (
+                        <div style={{ padding: "6px 10px", fontSize: 11, color: "#444" }}>No matching users</div>
+                    )}
+                    {results.map(u => (
+                        <button
+                            key={u.github_id}
+                            type="button"
+                            onClick={() => pick(u)}
+                            style={{
+                                display: "block", width: "100%", textAlign: "left",
+                                padding: "6px 10px", fontSize: 11, color: "#aaa",
+                                background: "none", border: "none", cursor: "pointer",
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.backgroundColor = "#1a1a1a"; }}
+                            onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                        >
+                            {u.github_username}
+                        </button>
+                    ))}
+                </div>,
+                document.body
+            )}
+        </div>
+    );
+}
+
+// ── Owning team assign/remove ────────────────────────────────────────────────
+// Assigns or clears which standalone Team owns this package outright — a
+// single-step swap, distinct from managing a team's own membership roster
+// (Account Settings) or the flat per-package co-owner list (TeamPanel below).
+
+function OwningTeamPanel({ entry, onChanged }: { entry: CatalogEntry; onChanged?: () => void }) {
+    const [myTeams, setMyTeams]   = useState<Team[]>([]);
+    const [picked, setPicked]     = useState<number | "">("");
+    const [busy, setBusy]         = useState(false);
+    const [err, setErr]           = useState<string | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        getLicenseToken().then(token => {
+            if (!token) return;
+            mpMyTeams(token).then(teams => { if (!cancelled) setMyTeams(teams); }).catch(() => {});
+        });
+        return () => { cancelled = true; };
+    }, []);
+
+    const assign = async () => {
+        if (!picked) return;
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setBusy(true); setErr(null);
+        try { await mpSetOwnerTeam(entry.marketplaceId, Number(picked), token); setPicked(""); onChanged?.(); }
+        catch (e) { setErr(String(e)); }
+        finally { setBusy(false); }
+    };
+
+    const remove = async () => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setBusy(true); setErr(null);
+        try { await mpSetOwnerTeam(entry.marketplaceId, null, token); onChanged?.(); }
+        catch (e) { setErr(String(e)); }
+        finally { setBusy(false); }
+    };
+
+    return (
+        <div style={{ marginBottom: 16 }}>
+            <FieldLabel>Owning team</FieldLabel>
+            {entry.owner_team_id ? (
+                <div style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "7px 10px", borderRadius: 0,
+                    backgroundColor: "#0e0e0e", border: "1px solid #1e1e1e",
+                }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "#999", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {entry.owner_team_name ?? "Team"}
+                        {entry.owner_team_vanity && <span style={{ color: "#3a3a3a" }}> ({entry.owner_team_vanity})</span>}
+                    </span>
+                    <ActionBtn label="Remove team" variant="danger" small loading={busy} onClick={remove}/>
+                </div>
+            ) : myTeams.length > 0 ? (
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <select
+                        value={picked}
+                        onChange={e => setPicked(e.target.value ? Number(e.target.value) : "")}
+                        style={{ ...inputStyle, width: "auto", flex: 1 }}
+                    >
+                        <option value="">Select a team you belong to…</option>
+                        {myTeams.map(t => (
+                            <option key={t.id} value={t.id}>{t.name} ({t.vanity})</option>
+                        ))}
+                    </select>
+                    <ActionBtn label="Assign" small loading={busy} disabled={!picked} onClick={assign}/>
+                </div>
+            ) : (
+                <p style={{ fontSize: 11, color: "#2a2a2a" }}>
+                    Not team-owned — individually owned via the co-owner list below.
+                    You don't belong to any teams to assign one; create one in Account Settings.
+                </p>
+            )}
+            {err && <p style={{ fontSize: 11, color: "#ef4444", marginTop: 6 }}>{err}</p>}
+        </div>
+    );
+}
+
+// ── Package owners panel ─────────────────────────────────────────────────────
+// Flat per-package co-owner list — only meaningful when the package isn't
+// owned by a standalone Team (see Account Settings for that; a team-owned
+// package's owners are the team's roster, managed there instead).
+
+function TeamPanel({ entry, onOwnerChanged }: { entry: CatalogEntry; onOwnerChanged?: () => void }) {
+    const [team, setTeam]         = useState<PackageOwner[]>([]);
+    const [loading, setLoading]   = useState(true);
+    const [busyId, setBusyId]     = useState<number | null>(null);
+    const [adding, setAdding]     = useState(false);
+    const [err, setErr]           = useState<string | null>(null);
+
+    const load = useCallback(async () => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); setLoading(false); return; }
+        setLoading(true);
+        try { setTeam(await mpFetchPackageOwners(entry.marketplaceId, token)); }
+        catch (e) { setErr(String(e)); }
+        finally { setLoading(false); }
+    }, [entry.marketplaceId]);
+
+    useEffect(() => { load(); }, [load]);
+
+    const add = async (user: UserSearchResult) => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setAdding(true); setErr(null);
+        try { await mpAddPackageOwner(entry.marketplaceId, user.github_id, token); await load(); }
+        catch (e) { setErr(String(e)); }
+        finally { setAdding(false); }
+    };
+
+    const remove = async (githubId: number) => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setBusyId(githubId); setErr(null);
+        try { await mpRemovePackageOwner(entry.marketplaceId, githubId, token); await load(); }
+        catch (e) { setErr(String(e)); }
+        finally { setBusyId(null); }
+    };
+
+    const isTeamOwned = !!entry.owner_team_id;
+
+    return (
+        <div style={{ marginTop: 14 }}>
+            <OwningTeamPanel entry={entry} onChanged={onOwnerChanged}/>
+
+            {isTeamOwned && (
+                <p style={{ fontSize: 10, color: "#2a2a2a", marginBottom: 16 }}>
+                    This package is owned by the team above — its members are the effective
+                    owners and the co-owner list below is unused while a team owns it.
+                </p>
+            )}
+
+            <FieldLabel>Co-owners</FieldLabel>
+            {loading ? (
+                <p style={{ fontSize: 11, color: "#2a2a2a", marginBottom: 16 }}>Loading…</p>
+            ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+                    {team.length === 0 && (
+                        <p style={{ fontSize: 11, color: "#2a2a2a" }}>No co-owners yet</p>
+                    )}
+                    {team.map(m => (
+                        <div key={m.github_id} style={{
+                            display: "flex", alignItems: "center", gap: 10,
+                            padding: "7px 10px", borderRadius: 0,
+                            backgroundColor: "#0e0e0e", border: "1px solid #1e1e1e",
+                        }}>
+                            <img
+                                src={`https://avatars.githubusercontent.com/u/${m.github_id}?v=4&s=48`}
+                                alt="" width={24} height={24}
+                                style={{ borderRadius: "50%", flexShrink: 0, backgroundColor: "#161616", border: "1px solid #222" }}
+                                onError={e => { e.currentTarget.style.visibility = "hidden"; }}
+                            />
+                            <span style={{ fontSize: 12, fontWeight: 600, color: "#999", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {m.github_username ? m.github_username : `#${m.github_id}`}
+                            </span>
+                            <span style={{ fontSize: 10, color: "#3a3a3a", flexShrink: 0 }}>
+                                since {new Date(m.added_at).toLocaleDateString()}
+                            </span>
+                            <ActionBtn
+                                label="Remove" variant="danger" small
+                                loading={busyId === m.github_id}
+                                disabled={team.length <= 1}
+                                onClick={() => remove(m.github_id)}
+                            />
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            <div style={{ marginBottom: 10 }}>
+                <FieldLabel>Add co-owner</FieldLabel>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <UserSearchField onPick={add} disabled={adding}/>
+                    {adding && <span style={{ fontSize: 10, color: "#444", flexShrink: 0 }}>Adding…</span>}
+                </div>
+                <p style={{ fontSize: 10, color: "#2a2a2a", marginTop: 6 }}>
+                    Search by GitHub username. They must have signed into the marketplace at least once.
+                </p>
+            </div>
+
+            {err && <p style={{ fontSize: 11, color: "#ef4444" }}>{err}</p>}
+        </div>
+    );
+}
+
+// ── Owner panel ───────────────────────────────────────────────────────────────
+
+type OwnerTab = "none" | "edit" | "release" | "resources" | "team";
+
+function OwnerPanel({ entry, isAdmin, onApproved, onDenied, onMetaSaved, onReleaseSaved, onPublished, onDeleted }: {
+    entry: CatalogEntry; isAdmin: boolean;
+    onApproved?: () => void; onDenied?: () => void; onMetaSaved?: () => void;
+    onReleaseSaved?: () => void; onPublished?: () => void; onDeleted?: () => void;
+}) {
+    const [tab, setTab]               = useState<OwnerTab>("none");
+    const [showDenyModal, setDenyModal] = useState(false);
+    const [deleteConfirm, setDeleteConfirm] = useState(false);
+    const [busy, setBusy]             = useState(false);
+
+    useEffect(() => { setTab("none"); setDeleteConfirm(false); }, [entry.id]);
+
+    const isPublished = !entry.status || entry.status === "published";
+
+    const run = async (fn: (t: string) => Promise<void>, cb?: () => void) => {
+        const t = await getLicenseToken();
+        if (!t) return;
+        setBusy(true);
+        try { await fn(t); cb?.(); }
+        finally { setBusy(false); }
+    };
+
+    const handleDeny = (reason: string) => {
+        setDenyModal(false);
+        run(t => mpDeny(entry.marketplaceId, reason, t), onDenied);
+    };
+
+    const ownerTabs: { key: OwnerTab; label: string }[] = [
+        { key: "edit",      label: "Edit" },
+        { key: "release",   label: "Release" },
+        { key: "resources", label: "Resources" },
+        { key: "team",      label: "Team" },
+    ];
+
+    const hasModerationRow = entry.status === "pending" || entry.status === "draft" || entry.status === "denied" || isAdmin;
+
+    return (
+        <div style={{
+            backgroundColor: "#0b0b0f", border: "1px solid #1c1c26",
+            borderRadius: 0, padding: "16px 18px",
+        }}>
+            {/* Moderation actions — approve/deny/publish/delete — kept separate
+                from the edit/release/resources/team tabs below, since these are
+                one-shot lifecycle actions, not panels to switch between. */}
+            {hasModerationRow && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid #17171f" }}>
+                    {entry.status === "pending" && (
+                        <>
+                            <ActionBtn label="Approve" variant="primary" loading={busy} onClick={() => run(t => mpApprove(entry.marketplaceId, t), onApproved)}/>
+                            <ActionBtn label="Deny…"   variant="danger"  loading={busy} onClick={() => setDenyModal(true)}/>
+                        </>
+                    )}
+                    {entry.status !== "pending" && isAdmin && (
+                        <ActionBtn
+                            label={isPublished ? "Unpublish" : "Publish"}
+                            variant={isPublished ? "ghost" : "primary"}
+                            loading={busy}
+                            onClick={() => run(t => mpPublish(entry.marketplaceId, !isPublished, t), onPublished)}
+                        />
+                    )}
+                    {(entry.status === "draft" || entry.status === "denied") && (
+                        <ActionBtn label="Deny…" variant="danger" loading={busy} onClick={() => setDenyModal(true)}/>
+                    )}
+                    {isAdmin && (
+                        <ActionBtn
+                            label={deleteConfirm ? "Confirm delete" : "Delete"}
+                            variant="danger" loading={busy}
+                            onClick={() => {
+                                if (!deleteConfirm) { setDeleteConfirm(true); return; }
+                                setDeleteConfirm(false);
+                                run(t => mpDeleteModule(entry.marketplaceId, t), onDeleted);
+                            }}
+                        />
+                    )}
+                </div>
+            )}
+
+            <TabStrip<OwnerTab>
+                tabs={ownerTabs}
+                active={tab}
+                onChange={t => setTab(p => p === t ? "none" : t)}
+                small
+            />
+
+            {tab === "none" && (
+                <p style={{ fontSize: 11, color: "#333", margin: 0 }}>
+                    Edit this package's listing, publish a new release, manage its screenshots, or add a co-owner.
+                </p>
+            )}
+            {tab === "edit"      && <EditMetaPanel   entry={entry} onSaved={() => { setTab("none"); onMetaSaved?.(); }}    onCancel={() => setTab("none")}/>}
+            {tab === "release"   && <AddReleasePanel entry={entry} onSaved={() => { setTab("none"); onReleaseSaved?.(); }} onCancel={() => setTab("none")}/>}
+            {tab === "resources" && <ResourcePanel   entry={entry} onCancel={() => setTab("none")}/>}
+            {tab === "team"      && <TeamPanel       entry={entry} onOwnerChanged={onMetaSaved}/>}
+
+            {showDenyModal && <DenyModal onConfirm={handleDeny} onCancel={() => setDenyModal(false)}/>}
+        </div>
+    );
+}
+
+// ── Module detail ─────────────────────────────────────────────────────────────
+
+/** Collapsed-by-default section toggle — a Pivot-style header (Metro's
+ *  real convention: short label, all caps, light tracking, one size below
+ *  everything that matters more) so it sits clearly *under* the hero
+ *  headline instead of competing with it at the same size. */
+function AccordionHeader({ label, open, onClick, badge }: { label: string; open: boolean; onClick: () => void; badge?: string }) {
+    return (
+        <button className="mp-metro-tile" onClick={onClick} style={{
+            "--mp-bg": "transparent", "--mp-bg-hover": "var(--color-bg-hover)", "--mp-bg-press": "var(--color-bg-surface)",
+            display: "flex", alignItems: "center", gap: 10, width: "100%",
+            padding: "14px 16px", border: "none", cursor: "pointer", textAlign: "left" as const,
+            borderTop: "1px solid var(--color-border)",
+        } as React.CSSProperties}>
+            <span style={{
+                fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const,
+                color: "var(--color-text-secondary)", flex: 1,
+            }}>{label}</span>
+            {badge && <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>{badge}</span>}
+            <span style={{
+                fontSize: 11, color: "var(--color-text-muted)", transition: "transform 0.15s",
+                transform: open ? "rotate(180deg)" : "rotate(0deg)", display: "inline-block",
+            }}>⌄</span>
+        </button>
+    );
+}
+
+// ── Metro presentation layer ────────────────────────────────────────────────
+// The actual house style, once you look for it: the installer (tools/installer/
+// ui/src/components/Tile.tsx, Button.tsx) is flat Metro/Modern-UI — square
+// corners (border-radius: 0), solid flat fills, no gradients, no shadows,
+// light-weight display type, title+description block tiles — and it shares
+// the exact same CSS tokens as this app (index.css: --color-accent,
+// --color-bg-card, --color-bg-surface). Everything below matches that,
+// rather than inventing another decorative language of its own.
+
+/** Hover/press feedback for every clickable flat block on this page — real
+ *  CSS :hover/:active driven by per-element custom properties (so one rule
+ *  works for the accent-colored primary tile, the plain card tiles, and
+ *  anything else that sets --mp-bg), instead of tiles that sit dead until
+ *  you click them. Injected once. */
+function MetroStyles() {
+    return (
+        <style>{`
+            .mp-metro-tile { background-color: var(--mp-bg); transition: background-color 0.08s ease; }
+            .mp-metro-tile:hover:not(:disabled) { background-color: var(--mp-bg-hover); }
+            .mp-metro-tile:active:not(:disabled) { background-color: var(--mp-bg-press); }
+            /* Same-container fade on module switch — Metro's documented content
+               transition (new content fades in, in place) rather than a slide
+               or anything that draws attention to itself. */
+            .mp-fade-in { animation: mp-fade-in 0.18s ease; }
+            @keyframes mp-fade-in { from { opacity: 0; } to { opacity: 1; } }
+        `}</style>
+    );
+}
+
+/** Full-width flat block: a title, a muted description line, optionally
+ *  clickable — the installer's exact Tile contract (see Tile.tsx), used
+ *  here for the identity block and for each action.
+ *
+ *  Metro's real type scale was a deliberate 9/11/20/42pt hierarchy (Segoe UI
+ *  Light for the big number) — one dominant light headline, everything else
+ *  much smaller. `size="hero"` is that headline, reserved for the identity
+ *  block; every action tile stays at the normal 15px so nothing competes
+ *  with the module's own name for attention. */
+function MetroTile({ title, description, primary, tone, onClick, disabled, loading, size = "normal" }: {
+    title: string; description?: React.ReactNode; primary?: boolean; tone?: string;
+    onClick?: () => void; disabled?: boolean; loading?: boolean; size?: "normal" | "hero";
+}) {
+    const bg = primary ? (tone ?? "var(--color-accent)") : "var(--color-bg-card)";
+    const hoverBg = primary
+        ? `color-mix(in srgb, ${tone ?? "var(--color-accent)"} 85%, white)`
+        : "var(--color-bg-hover)";
+    const pressBg = primary
+        ? `color-mix(in srgb, ${tone ?? "var(--color-accent)"} 80%, black)`
+        : "var(--color-bg-surface)";
+    const Tag = onClick ? "button" : "div";
+    return (
+        <Tag
+            className={onClick ? "mp-metro-tile" : undefined}
+            onClick={onClick}
+            disabled={onClick ? disabled || loading : undefined}
+            style={{
+                "--mp-bg": bg, "--mp-bg-hover": hoverBg, "--mp-bg-press": pressBg,
+                display: "block", width: "100%", textAlign: "left" as const,
+                padding: size === "hero" ? "22px 20px 26px" : "12px 16px", borderRadius: 0, border: "none",
+                backgroundColor: onClick ? undefined : bg, color: primary ? "#fff" : "var(--color-text-primary)",
+                cursor: onClick ? (disabled || loading ? "default" : "pointer") : "default",
+                opacity: disabled ? 0.4 : 1,
+            } as React.CSSProperties}
+        >
+            <div style={
+                size === "hero"
+                    ? { fontSize: 34, fontWeight: 200, letterSpacing: "-0.02em", lineHeight: 1.1 }
+                    : { fontSize: 15, fontWeight: 300 }
+            }>{loading ? "…" : title}</div>
+            {description && (
+                <div style={{
+                    fontSize: size === "hero" ? 13 : 11, marginTop: size === "hero" ? 8 : 2,
+                    color: primary ? "rgba(255,255,255,0.75)" : "var(--color-text-muted)",
+                }}>
+                    {description}
+                </div>
+            )}
+        </Tag>
+    );
+}
+
+/** Small flat label — a solid rectangle, no pill radius, no border — the
+ *  installer never rounds anything smaller than a modal corner either. */
+function MetroTag({ label, tone }: { label: string; tone?: string }) {
+    return (
+        <span style={{
+            display: "inline-block", fontSize: 10, fontWeight: 600,
+            padding: "3px 8px", borderRadius: 0,
+            backgroundColor: tone ? `${tone}2a` : "var(--color-bg-surface)",
+            color: tone ?? "var(--color-text-secondary)",
+        }}>
+            {label}
+        </span>
+    );
+}
+
+export interface ModuleDetailProps {
+    entry: CatalogEntry;
+    account: AccountState;
+    busy: boolean;
+    progress: InstallProgress | null;
+    onInstall: () => void;
+    onUninstall: () => void;
+    onUpdate: () => void;
+    onRefresh?: () => void;
+    onHardRefresh?: () => void;
+    onApproved?: () => void;
+    onDenied?: () => void;
+    onMetaSaved?: () => void;
+    onReleaseSaved?: () => void;
+    onPublished?: () => void;
+    onDeleted?: () => void;
+}
+
+export function ModuleDetail({
+    entry, account, busy, progress,
+    onInstall, onUninstall, onUpdate, onRefresh, onHardRefresh,
+    onApproved, onDenied, onMetaSaved, onReleaseSaved, onPublished, onDeleted,
+}: ModuleDetailProps) {
+    const [removeConfirm, setRemoveConfirm]   = useState(false);
+    const [botCommands, setBotCommands]       = useState<BotCommand[]>([]);
+    const shiftHeldRef = useRef(false);
+    const [shiftHeld, setShiftHeld] = useState(false);
+
+    // Reactive shift-key state so the Refresh button can visibly relabel
+    // itself to "Hard Refresh" while held — shiftHeldRef (above) is the one
+    // actually read at click time, this is purely for the label/style.
+    useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftHeld(true); };
+        const onKeyUp   = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftHeld(false); };
+        const onBlur    = () => setShiftHeld(false);
+        window.addEventListener("keydown", onKeyDown);
+        window.addEventListener("keyup", onKeyUp);
+        window.addEventListener("blur", onBlur);
+        return () => {
+            window.removeEventListener("keydown", onKeyDown);
+            window.removeEventListener("keyup", onKeyUp);
+            window.removeEventListener("blur", onBlur);
+        };
+    }, []);
+    const [health, setHealth]                 = useState<PreflightIssue[] | null>(null);
+    const [healthLoading, setHealthLoading]   = useState(false);
+    const [showReport, setShowReport]         = useState(false);
+    const [reportBusy, setReportBusy]         = useState(false);
+    const [reportErr, setReportErr]           = useState<string | null>(null);
+    const [openSection, setOpenSection]       = useState<"releases" | "reviews" | "manage" | null>(null);
+    const [mediaIndex, setMediaIndex]         = useState(0);
+    const [lightbox, setLightbox]             = useState<string | null>(null);
+    const isPublished = !entry.status || entry.status === "published";
+    const isPending   = entry.status === "pending";
+    const isDenied    = entry.status === "denied";
+    const commands    = (entry.manifest as Record<string, unknown>)?.commands as Array<{ trigger: string; builtin_key?: string }> | undefined;
+    const screenshots = entry.resources?.filter(r => r.resource_type === "screenshot") ?? [];
+    // Synthetic entry for a locally-installed module/library that isn't in the
+    // catalog at all (see mergeWithInstalled in useMarketplace.ts) — it has no
+    // real backend record, so every marketplace-API-backed action (releases,
+    // reviews, reports, approve/deny/publish/edit/team) would just fail
+    // against a nonexistent id. Install/update/remove still work fine since
+    // those are local Tauri operations, not marketplace calls.
+    const isLocalOnly = entry.author === "local" || !!entry.isLocalShadow;
+    const canManage   = (account.isOwner || roleAtLeast(account.role, "staff")) && !isLocalOnly;
+    const hasReviews  = isPublished && !entry.verified && !isLocalOnly;
+    const hasReleases = isPublished && !isLocalOnly;
+
+    // Reset remove-confirm, open section, and the media viewer position when
+    // the selected entry changes
+    useEffect(() => { setRemoveConfirm(false); setOpenSection(null); setMediaIndex(0); }, [entry.id]);
+
+    // Reset report modal state when the selected entry changes
+    useEffect(() => { setShowReport(false); setReportErr(null); }, [entry.id]);
+
+    const submitReport = async (reason: ReportReason, details: string) => {
+        const token = await getLicenseToken();
+        if (!token) { setReportErr("Not signed in"); return; }
+        setReportBusy(true); setReportErr(null);
+        try {
+            await mpReportModule(entry.marketplaceId, reason, details, token);
+            setShowReport(false);
+        } catch (e) { setReportErr(String(e)); }
+        finally { setReportBusy(false); }
+    };
+
+    // Load registered bot commands whenever the selected module changes
+    useEffect(() => {
+        getCommands().then(setBotCommands).catch(() => {});
+    }, [entry.id]);
+
+    const runHealth = useCallback(() => {
+        if (!entry.installed) return;
+        setHealthLoading(true);
+        preflightModule(entry.marketplaceId)
+            .then(setHealth)
+            .catch(() => setHealth(null))
+            .finally(() => setHealthLoading(false));
+    }, [entry.id, entry.installed]);
+
+    // Reset health state when selected module changes
+    useEffect(() => { setHealth(null); }, [entry.id]);
+
+    const iconClr = entry.color || iconColor(entry.icon);
+    // Banner first (it's the "cover"), then screenshots — one media set, since
+    // the viewer below treats them as the same kind of thing: visual proof of
+    // what this package actually does, not two separate concepts.
+    const media = [
+        ...(entry.resources?.filter(r => r.resource_type === "banner") ?? []),
+        ...screenshots,
+    ];
+    const activeMedia = media[Math.min(mediaIndex, media.length - 1)];
+
+    const trustLabel = isPending ? "Pending Review" : isDenied ? "Denied" : entry.status === "draft" ? "Draft"
+        : entry.premium ? "Premium" : entry.verified ? "Official" : "Community";
+    const trustColor = isPending ? "#ffb23e" : isDenied ? "#ff5c5c" : entry.status === "draft" ? "#6a6f7a"
+        : entry.premium ? "#ffcb3e" : entry.verified ? "#3e9dff" : "#6a6f7a";
+
+    return (
+        <div key={entry.id} className="mp-fade-in" style={{ height: "100%", overflowY: "auto", backgroundColor: "var(--color-bg-base)" }}>
+            <MetroStyles/>
+
+            {/* Thumbnail — flat, square, no card, no frame. Skipped entirely
+                when there's no real image, instead of faking one. */}
+            {media.length > 0 && (
+                <div style={{ position: "relative", width: "100%", height: 200, backgroundColor: "#000" }}>
+                    <img src={activeMedia.url} alt={activeMedia.filename || entry.name}
+                        onClick={() => setLightbox(activeMedia.url)}
+                        style={{ width: "100%", height: "100%", objectFit: "cover" as const, cursor: "zoom-in", display: "block" }}/>
+                    {media.length > 1 && (
+                        <>
+                            <button onClick={() => setMediaIndex(i => (i - 1 + media.length) % media.length)} style={navArrowStyle("left")}>‹</button>
+                            <button onClick={() => setMediaIndex(i => (i + 1) % media.length)} style={navArrowStyle("right")}>›</button>
+                            <div style={{ position: "absolute", bottom: 8, left: 0, right: 0, display: "flex", justifyContent: "center", gap: 4 }}>
+                                {media.map((_, i) => (
+                                    <button key={i} onClick={() => setMediaIndex(i)} style={{
+                                        width: 16, height: 3, border: "none", padding: 0, cursor: "pointer", borderRadius: 0,
+                                        backgroundColor: i === mediaIndex ? "#fff" : "rgba(255,255,255,0.35)",
+                                    }}/>
+                                ))}
+                            </div>
+                        </>
+                    )}
+                </div>
+            )}
+
+            {/* Identity tile — the installer's exact Tile contract: solid
+                flat fill (the module's own color, standing in for "accent"),
+                a light-weight title, a muted subtitle. This is the app's
+                real house style, not a look built for this page. */}
+            <MetroTile
+                title={entry.name}
+                primary
+                tone={iconClr}
+                size="hero"
+                description={
+                    <>
+                        by {entry.author}
+                        {entry.submitter_username && entry.submitter_username !== entry.author && <> · submitted by {entry.submitter_username}</>}
+                        {entry.version && <> · v{entry.version}</>}
+                    </>
+                }
+            />
+
+            <div style={{ padding: "14px 16px 0" }}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+                    <MetroTag label={trustLabel} tone={trustColor}/>
+                    {entry.category && <MetroTag label={entry.category} tone={iconClr}/>}
+                    {(entry.package_type ?? "module") === "library" && <MetroTag label="Library" tone="#3e9dff"/>}
+                    {entry.package_type === "package" && <MetroTag label="Bundle" tone="#a78bfa"/>}
+                    {entry.installed && !entry.devWatch && <MetroTag label="Installed" tone="var(--color-accent)"/>}
+                    {entry.devWatch && <MetroTag label="Local Dev Build" tone="#22d3ee"/>}
+                    {entry.updateAvailable && <MetroTag label="Update Available" tone="#ffb23e"/>}
+                    {isLocalOnly && <MetroTag label="Local Only"/>}
+                    {entry.downloads > 0 && <MetroTag label={`${entry.downloads.toLocaleString()} installs`}/>}
+                    {!!entry.rating_count && entry.rating_count > 0 && (
+                        <MetroTag label={`${(entry.rating_avg ?? 0).toFixed(1)} ★ (${entry.rating_count})`} tone="#ffcb3e"/>
+                    )}
+                    {entry.min_app_version && <MetroTag label={`requires v${entry.min_app_version}+`}/>}
+                </div>
+            </div>
+
+            {/* Action tiles — stacked full-width flat blocks, the same
+                pattern the installer uses for "Express setup" / "Custom
+                setup" (see ModeSelect.tsx), not a row of small buttons. */}
+            {isPublished && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, padding: "0 16px 4px" }}>
+                    {!entry.installed && (
+                        <MetroTile primary title="Install" description="Download and add this to your bot." loading={busy && !!progress} onClick={onInstall}/>
+                    )}
+                    {entry.installed && entry.updateAvailable && (
+                        <MetroTile primary tone="#ffb23e" title="Update available" description={`Update to the latest version.`}
+                            loading={busy && !!progress} disabled={!account.username} onClick={onUpdate}/>
+                    )}
+                    {entry.installed && entry.devWatch ? (
+                        // Dev-watched: offer Refresh (reinstall from source) instead of Remove.
+                        // Shift-click does a hard refresh — fully deletes the installed copy
+                        // first instead of only overwriting/adding files. MetroTile's onClick
+                        // takes no event, so shiftKey is captured on the wrapping span first
+                        // (capture phase runs before the button's own bubble-phase handler).
+                        <span
+                            title={shiftHeld ? "Fully deletes and reinstalls from source" : "Shift-click for a hard refresh (fully deletes and reinstalls)"}
+                            onClickCapture={(e) => { shiftHeldRef.current = e.shiftKey; }}
+                        >
+                            <MetroTile
+                                title={shiftHeld ? "Hard Refresh" : "Refresh"}
+                                description={shiftHeld ? "Fully deletes and reinstalls from source." : "Reinstall from the watched local source."}
+                                tone={shiftHeld ? "#ff5c5c" : undefined}
+                                loading={busy && !!progress}
+                                onClick={() => { (shiftHeldRef.current ? onHardRefresh : onRefresh)?.(); }}/>
+                        </span>
+                    ) : entry.installed && (
+                        removeConfirm ? (
+                            <div style={{ display: "flex", gap: 2 }}>
+                                <div style={{ flex: 1 }}><MetroTile title="Cancel" onClick={() => setRemoveConfirm(false)}/></div>
+                                <div style={{ flex: 1 }}><MetroTile title="Confirm remove" loading={busy && !!progress} onClick={() => { setRemoveConfirm(false); onUninstall(); }}/></div>
+                            </div>
+                        ) : (
+                            <MetroTile title="Remove" description="Uninstall this package." onClick={() => setRemoveConfirm(true)}/>
+                        )
+                    )}
+                    {account.username && !isLocalOnly && (
+                        <MetroTile title="Report" description="Flag this package for review." onClick={() => setShowReport(true)}/>
+                    )}
+                    {canManage && (
+                        <MetroTile title={openSection === "manage" ? "Hide manage tools" : "Manage package"}
+                            onClick={() => setOpenSection(s => s === "manage" ? null : "manage")}/>
+                    )}
+                </div>
+            )}
+
+            <div style={{ padding: "16px" }}>
+                {progress && <ProgressBar progress={progress}/>}
+
+                {entry.devWatch && (
+                    <div style={{ marginBottom: 16, padding: "10px 14px", backgroundColor: "var(--color-bg-card)" }}>
+                        <span style={{ fontSize: 11, color: "#22d3ee" }}>Watching local source</span>
+                        <div style={{ fontSize: 10, color: "var(--color-text-muted)", fontFamily: "monospace", marginTop: 2 }}>{entry.devWatch.source_dir}</div>
+                    </div>
+                )}
+
+                {isDenied && entry.deny_reason && (
+                    <div style={{ marginBottom: 16, padding: "10px 14px", backgroundColor: "#2a1414" }}>
+                        <p style={{ fontSize: 9, fontWeight: 700, color: "#ff8080", marginBottom: 4, letterSpacing: "0.08em", textTransform: "uppercase" as const }}>
+                            Denial reason
+                        </p>
+                        <p style={{ fontSize: 12, color: "var(--color-text-secondary)", margin: 0 }}>{entry.deny_reason}</p>
+                    </div>
+                )}
+
+                <p style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.7, margin: 0 }}>
+                    {entry.description || <span style={{ color: "var(--color-text-muted)", fontStyle: "italic" }}>No description provided.</span>}
+                </p>
+
+                {(entry.tags ?? []).filter(t => !["installed", "local"].includes(t)).length > 0 && (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12 }}>
+                        {entry.tags.filter(t => !["installed", "local"].includes(t)).map(t => <MetroTag key={t} label={t}/>)}
+                    </div>
+                )}
+                    {entry.changelog && (
+                        <div style={{ marginBottom: 20 }}>
+                            <p style={{ fontSize: 10, fontWeight: 700, color: "#6a6f7a", letterSpacing: "0.08em", textTransform: "uppercase" as const, marginBottom: 8 }}>What's New</p>
+                            <pre style={{
+                                fontSize: 11, color: "#8a8f99", lineHeight: 1.6,
+                                whiteSpace: "pre-wrap", fontFamily: "inherit",
+                                backgroundColor: "#12121600", borderRadius: 0, margin: 0,
+                            }}>{entry.changelog}</pre>
+                        </div>
+                    )}
+
+                    {commands && commands.length > 0 && (
+                        <div style={{ marginBottom: 20 }}>
+                            <p style={{ fontSize: 10, fontWeight: 700, color: "#6a6f7a", letterSpacing: "0.08em", textTransform: "uppercase" as const, marginBottom: 8 }}>Commands</p>
+                            {/* Plain rows, not boxed cards — Metro's list convention leans on
+                                whitespace and a thin divider, not per-row chrome. */}
+                            <div>
+                                {commands.map((c, i) => {
+                                    const registered = botCommands.find(b =>
+                                        b.trigger === c.trigger ||
+                                        (c.builtin_key && b.builtin_key === c.builtin_key)
+                                    );
+                                    const isActive = registered && registered.enabled;
+                                    return (
+                                        <div key={c.trigger} style={{
+                                            display: "flex", alignItems: "center", gap: 10,
+                                            padding: "8px 0",
+                                            borderTop: i > 0 ? "1px solid var(--color-border)" : undefined,
+                                        }}>
+                                            <span style={{
+                                                width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                                                backgroundColor: isActive ? "#3ecf5c" : registered ? "#5b6472" : "#33333c",
+                                                boxShadow: isActive ? "0 0 4px #3ecf5c66" : "none",
+                                            }}/>
+                                            <span style={{
+                                                fontSize: 12, fontFamily: "monospace", fontWeight: 600,
+                                                color: isActive ? "#d4d4d4" : "#5b6472", flex: 1, minWidth: 0,
+                                                overflow: "hidden", textOverflow: "ellipsis",
+                                            }}>{c.trigger}</span>
+                                            <span style={{ fontSize: 10, color: "#4a4f58" }}>
+                                                {isActive ? "registered" : registered ? "disabled" : "not registered"}
+                                            </span>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+
+                    {entry.installed && (
+                        <div style={{ marginBottom: 20 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                                <p style={{ fontSize: 10, fontWeight: 700, color: "#6a6f7a", letterSpacing: "0.08em", textTransform: "uppercase" as const, margin: 0 }}>Health</p>
+                                <button
+                                    onClick={runHealth} disabled={healthLoading}
+                                    style={{
+                                        marginLeft: "auto", fontSize: 10, fontWeight: 600, cursor: "pointer",
+                                        padding: "3px 10px", borderRadius: 0,
+                                        border: "none", backgroundColor: "var(--color-bg-surface)",
+                                        color: healthLoading ? "var(--color-text-muted)" : "var(--color-text-secondary)",
+                                    }}
+                                >{healthLoading ? "Checking…" : "Re-check"}</button>
+                            </div>
+
+                            {healthLoading && !health && (
+                                <p style={{ fontSize: 11, color: "#4a4f58", fontStyle: "italic" }}>Running checks…</p>
+                            )}
+
+                            {health !== null && (
+                                health.length === 0 ? (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
+                                        <span style={{ color: "#3ecf5c", fontSize: 14 }}>✓</span>
+                                        <span style={{ fontSize: 12, color: "#3ecf5cbb" }}>All checks passed</span>
+                                    </div>
+                                ) : (
+                                    <div>
+                                        {health.map((issue, i) => (
+                                            <div key={i} style={{
+                                                display: "flex", alignItems: "flex-start", gap: 10,
+                                                padding: "8px 0",
+                                                borderTop: i > 0 ? "1px solid var(--color-border)" : undefined,
+                                            }}>
+                                                <span style={{ fontSize: 10, flexShrink: 0, color: issue.severity === "error" ? "#ff5c5c" : "#ffb23e", marginTop: 2 }}>
+                                                    {issue.severity === "error" ? "✕" : "⚠"}
+                                                </span>
+                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                    {issue.file && (
+                                                        <div style={{
+                                                            fontSize: 10, color: "#6a6f7a", fontFamily: "monospace",
+                                                            marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                                        }} title={issue.file}>{issue.file}</div>
+                                                    )}
+                                                    <span style={{ fontSize: 12, color: issue.severity === "error" ? "#ff5c5cbb" : "#ffb23ebb" }}>{issue.message}</span>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )
+                            )}
+                        </div>
+                    )}
+
+                    {/* Collapsed-by-default: Release History / Reviews / Manage —
+                        opened inline, one at a time, instead of a separate page. */}
+                    {hasReleases && (
+                        <>
+                            <AccordionHeader label="Release History" open={openSection === "releases"}
+                                onClick={() => setOpenSection(s => s === "releases" ? null : "releases")}/>
+                            {openSection === "releases" && <div style={{ padding: "4px 2px 14px" }}><ReleaseHistory id={entry.marketplaceId}/></div>}
+                        </>
+                    )}
+
+                    {hasReviews && (
+                        <>
+                            <AccordionHeader label="Reviews" open={openSection === "reviews"}
+                                badge={entry.rating_count ? `${entry.rating_count}` : undefined}
+                                onClick={() => setOpenSection(s => s === "reviews" ? null : "reviews")}/>
+                            {openSection === "reviews" && (
+                                <div style={{ padding: "4px 2px 14px" }}>
+                                    <ModuleFeedback moduleId={entry.marketplaceId} account={account}/>
+                                    {!account.username && (
+                                        <div style={{ marginTop: 12, padding: "8px 12px", borderRadius: 0, backgroundColor: "#15151a", border: "1px solid #22222a" }}>
+                                            <p style={{ fontSize: 11, color: "#6a6f7a", margin: 0 }}>
+                                                Sign in via the About page to leave reviews and receive update notifications.
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </>
+                    )}
+
+                    {canManage && openSection === "manage" && (
+                        <div style={{ marginTop: 16 }}>
+                            <OwnerPanel
+                                entry={entry}
+                                isAdmin={account.isOwner || roleAtLeast(account.role, "admin")}
+                                onApproved={onApproved} onDenied={onDenied}
+                                onMetaSaved={onMetaSaved} onReleaseSaved={onReleaseSaved}
+                                onPublished={onPublished} onDeleted={onDeleted}
+                            />
+                        </div>
+                    )}
+            </div>
+
+            {showReport && (
+                <ReportModal
+                    title={`Report "${entry.name}"`}
+                    busy={reportBusy}
+                    err={reportErr}
+                    onClose={() => setShowReport(false)}
+                    onSubmit={submitReport}
+                />
+            )}
+
+            {lightbox && (
+                <div style={{
+                    position: "fixed", inset: 0, zIndex: 999,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    backgroundColor: "rgba(0,0,0,0.85)", cursor: "zoom-out",
+                }} onClick={() => setLightbox(null)}>
+                    <img src={lightbox} alt="" style={{ maxWidth: "90%", maxHeight: "90%", borderRadius: 0, boxShadow: "0 12px 40px rgba(0,0,0,0.6)" }}/>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function navArrowStyle(side: "left" | "right"): React.CSSProperties {
+    return {
+        position: "absolute", top: "50%", [side]: 10, transform: "translateY(-50%)",
+        width: 30, height: 30, borderRadius: "50%", border: "none", cursor: "pointer",
+        backgroundColor: "rgba(0,0,0,0.5)", color: "#fff", fontSize: 18, lineHeight: 1,
+    };
+}
+
+// ── Input style ───────────────────────────────────────────────────────────────
+
+const inputStyle: React.CSSProperties = {
+    width: "100%", padding: "8px 11px", fontSize: 13,
+    backgroundColor: "#0a0a0a", color: "#aaa",
+    border: "1px solid #222", borderRadius: 0, outline: "none",
+    fontFamily: "inherit", boxSizing: "border-box" as const,
+};
+
+/** Consistent field label — matches SectionLabel's letter-spaced-caps
+ *  language at a smaller weight, instead of the ad-hoc `fontSize:10,
+ *  color:"#3a3a3a"` labels the Manage forms used to repeat everywhere. */
+function FieldLabel({ children }: { children: React.ReactNode }) {
+    return (
+        <div style={{
+            fontSize: 10, fontWeight: 700, color: "#555",
+            letterSpacing: "0.05em", textTransform: "uppercase" as const,
+            marginBottom: 5,
+        }}>
+            {children}
+        </div>
+    );
+}

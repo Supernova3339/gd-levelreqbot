@@ -1,0 +1,1622 @@
+﻿import { useCallback, useEffect, useRef, useState } from "react";
+import type { CatalogEntry } from "./useMarketplace";
+import { type AccountState, roleAtLeast } from "./useAccount";
+import type { InstallProgress } from "../ModulesPage";
+import {
+    mpApprove, mpDeny, mpUpdateMeta, mpAddRelease, mpFetchReleases,
+    mpPublish, mpDeleteModule, mpUploadResource, mpDeleteResource, mpReportModule,
+    mpFetchPackageOwners, mpAddPackageOwner, mpRemovePackageOwner, mpSearchUsers,
+    mpMyTeams, mpSetOwnerTeam,
+    type Release, type ResourceRecord, type ReportReason, type PackageOwner, type UserSearchResult, type Team,
+} from "./marketplace-api";
+import { getLicenseToken, getCommands, preflightModule, type BotCommand, type PreflightIssue } from "../../lib/commands";
+import { iconColor, IconRenderer } from "./icons";
+import { ModuleFeedback } from "./ModuleFeedback";
+import { ReportModal, MCategoryField } from "./shared";
+import type { MarketplaceCategory } from "./marketplace-api";
+import { createPortal } from "react-dom";
+import { computePosition, flip, offset, shift } from "@floating-ui/dom";
+
+// ── Primitives ────────────────────────────────────────────────────────────────
+
+function Chip({ label, color, accent }: { label: string; color?: string; accent?: boolean }) {
+    return (
+        <span style={{
+            fontSize: 9, fontWeight: 700, letterSpacing: "0.05em",
+            textTransform: "uppercase" as const,
+            padding: "2px 7px", borderRadius: 4,
+            backgroundColor: accent
+                ? "color-mix(in srgb, var(--color-accent) 14%, transparent)"
+                : color ? `${color}18` : "#1a1a1a",
+            color: accent ? "var(--color-accent)" : color ?? "#3a3a3a",
+            border: `1px solid ${accent
+                ? "color-mix(in srgb, var(--color-accent) 25%, transparent)"
+                : color ? `${color}44` : "#222"}`,
+        }}>
+            {label}
+        </span>
+    );
+}
+
+/** Small dashboard-tile stat, used in place of a flat "·"-joined meta line. */
+function StatPill({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
+    return (
+        <div style={{
+            display: "flex", alignItems: "baseline", gap: 4,
+            padding: "4px 9px", borderRadius: 7,
+            backgroundColor: "#0d0d10", border: "1px solid #1b1b20",
+        }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: color ?? "#888" }}>{value}</span>
+            {sub && <span style={{ fontSize: 9, color: "#3a3a3a" }}>({sub})</span>}
+            <span style={{ fontSize: 8, color: "#333", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>{label}</span>
+        </div>
+    );
+}
+
+/** Vertical label/value block for a sidebar "quick facts" column. */
+function StatCard({ label, value, color }: { label: string; value: string; color?: string }) {
+    return (
+        <div style={{
+            padding: "8px 10px", borderRadius: 7,
+            backgroundColor: "#0d0d10", border: "1px solid #1b1b20",
+        }}>
+            <div style={{ fontSize: 9, color: "#3a3a3a", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>
+                {label}
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: color ?? "#999" }}>{value}</div>
+        </div>
+    );
+}
+
+function SectionLabel({ label }: { label: string }) {
+    return (
+        <p style={{
+            fontSize: 10, fontWeight: 700, color: "#2a2a2a",
+            letterSpacing: "0.1em", textTransform: "uppercase" as const,
+            marginBottom: 10,
+        }}>{label}</p>
+    );
+}
+
+function Divider() {
+    return <div style={{ height: 1, backgroundColor: "#111", margin: "20px 0" }}/>;
+}
+
+/** Shared tab strip — used both for the detail pane's top-level tabs and the
+ *  Manage tab's edit/release/resources/team sub-tabs (smaller variant). */
+function TabStrip<T extends string>({ tabs, active, onChange, small }: {
+    tabs: { key: T; label: string }[]; active: T; onChange: (t: T) => void; small?: boolean;
+}) {
+    return (
+        <div style={{ display: "flex", gap: small ? 6 : 2, borderBottom: small ? "none" : "1px solid #161616", marginBottom: small ? 16 : 18 }}>
+            {tabs.map(t => {
+                const isActive = t.key === active;
+                return small ? (
+                    <button key={t.key} onClick={() => onChange(t.key)} style={{
+                        padding: "6px 14px", fontSize: 11.5, fontWeight: isActive ? 700 : 500,
+                        color: isActive ? "var(--color-accent)" : "#666",
+                        background: isActive ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+                        border: `1px solid ${isActive ? "color-mix(in srgb, var(--color-accent) 28%, transparent)" : "#222"}`,
+                        borderRadius: 7, cursor: "pointer", transition: "border-color 0.1s, color 0.1s",
+                    }}>
+                        {t.label}
+                    </button>
+                ) : (
+                    <button key={t.key} onClick={() => onChange(t.key)} style={{
+                        padding: "8px 14px", fontSize: 12, fontWeight: isActive ? 700 : 500,
+                        color: isActive ? "#ccc" : "#444",
+                        background: "none", border: "none", cursor: "pointer",
+                        borderBottom: `2px solid ${isActive ? "var(--color-accent)" : "transparent"}`,
+                        marginBottom: -1, transition: "color 0.1s",
+                    }}>
+                        {t.label}
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
+// ── Action button ─────────────────────────────────────────────────────────────
+
+type BtnVariant = "primary" | "ghost" | "danger" | "warn";
+
+function ActionBtn({
+    label, variant = "ghost", loading, disabled, small, onClick, title,
+}: {
+    label: string; variant?: BtnVariant;
+    loading?: boolean; disabled?: boolean; small?: boolean; onClick: () => void; title?: string;
+}) {
+    const styles: Record<BtnVariant, React.CSSProperties> = {
+        primary: { backgroundColor: "var(--color-accent)", color: "#fff", border: "none" },
+        ghost:   { backgroundColor: "transparent", color: "#555", border: "1px solid #252525" },
+        danger:  { backgroundColor: "transparent", color: "#ef4444", border: "1px solid #3a1a1a" },
+        warn:    { backgroundColor: "transparent", color: "#f59e0b", border: "1px solid #78350f44" },
+    };
+    return (
+        <button
+            onClick={onClick}
+            disabled={disabled || loading}
+            title={title}
+            style={{
+                padding: small ? "4px 12px" : "6px 18px",
+                fontSize: small ? 11 : 12,
+                fontWeight: 600, borderRadius: 6, cursor: disabled || loading ? "not-allowed" : "pointer",
+                opacity: disabled || loading ? 0.4 : 1,
+                transition: "opacity 0.1s",
+                flexShrink: 0,
+                ...styles[variant],
+            }}
+        >
+            {loading ? "…" : label}
+        </button>
+    );
+}
+
+// ── Progress bar ──────────────────────────────────────────────────────────────
+
+const PROGRESS_LABELS: Record<string, string> = {
+    resolving:   "Resolving…",
+    downloading: "Downloading…",
+    installing:  "Installing…",
+    removing:    "Removing…",
+};
+
+function ProgressBar({ progress }: { progress: InstallProgress }) {
+    const label = PROGRESS_LABELS[progress.state] ?? progress.state;
+    const msg   = progress.message;
+
+    const isIndeterminate = progress.state !== "downloading" || !msg;
+
+    return (
+        <div style={{
+            margin: "14px 0",
+            padding: "10px 14px",
+            backgroundColor: "#0d0d0d",
+            border: "1px solid #1a1a1a",
+            borderRadius: 8,
+        }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span style={{ fontSize: 11, color: "#555" }}>{label}</span>
+                {msg && <span style={{ fontSize: 10, color: "#333", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{msg}</span>}
+            </div>
+            <div style={{ height: 3, backgroundColor: "#1a1a1a", borderRadius: 2, overflow: "hidden" }}>
+                {isIndeterminate ? (
+                    <>
+                        <div style={{
+                            height: "100%",
+                            background: "linear-gradient(90deg, transparent, var(--color-accent)88, var(--color-accent), var(--color-accent)88, transparent)",
+                            backgroundSize: "200% 100%",
+                            animation: "detail-sweep 1.4s ease-in-out infinite",
+                        }}/>
+                        <style>{`@keyframes detail-sweep{0%{background-position:100% 0}100%{background-position:-100% 0}}`}</style>
+                    </>
+                ) : (
+                    <div style={{
+                        height: "100%",
+                        width: "60%",
+                        background: `linear-gradient(to right, var(--color-accent)66, var(--color-accent))`,
+                        borderRadius: 2,
+                        animation: "detail-sweep 1.4s ease-in-out infinite",
+                        backgroundSize: "200% 100%",
+                    }}/>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// ── Empty state ───────────────────────────────────────────────────────────────
+
+export function ModuleDetailEmpty() {
+    return (
+        <div style={{
+            display: "flex", flexDirection: "column", alignItems: "center",
+            justifyContent: "center", height: "100%", gap: 12,
+            color: "#1e1e1e",
+        }}>
+            <svg width="44" height="44" viewBox="0 0 44 44" fill="none">
+                <rect x="5" y="5" width="15" height="15" rx="3" stroke="currentColor" strokeWidth="1.5"/>
+                <rect x="24" y="5" width="15" height="15" rx="3" stroke="currentColor" strokeWidth="1.5"/>
+                <rect x="5" y="24" width="15" height="15" rx="3" stroke="currentColor" strokeWidth="1.5"/>
+                <rect x="24" y="24" width="15" height="15" rx="3" stroke="currentColor" strokeWidth="1.5"/>
+            </svg>
+            <div style={{ textAlign: "center" }}>
+                <p style={{ fontSize: 13, fontWeight: 600, color: "#252525" }}>Pick a package</p>
+                <p style={{ fontSize: 11, color: "#1e1e1e", marginTop: 3 }}>Select one from the list to see details</p>
+            </div>
+        </div>
+    );
+}
+
+// ── Deny modal ────────────────────────────────────────────────────────────────
+
+function DenyModal({ onConfirm, onCancel }: { onConfirm: (reason: string) => void; onCancel: () => void }) {
+    const [reason, setReason] = useState("");
+    return (
+        <div style={{
+            position: "fixed", inset: 0, zIndex: 999,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            backgroundColor: "rgba(0,0,0,0.6)",
+        }} onClick={e => { if (e.target === e.currentTarget) onCancel(); }}>
+            <div style={{
+                backgroundColor: "#111", border: "1px solid #222",
+                borderRadius: 10, padding: "20px 24px", width: 360,
+            }}>
+                <p style={{ fontSize: 13, fontWeight: 600, color: "#bbb", marginBottom: 12 }}>Deny submission</p>
+                <textarea
+                    autoFocus rows={4} value={reason}
+                    onChange={e => setReason(e.target.value)}
+                    placeholder="Reason for denial…"
+                    style={{ ...inputStyle, width: "100%", boxSizing: "border-box" as const, marginBottom: 12, resize: "vertical" as const }}
+                />
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                    <ActionBtn label="Cancel" variant="ghost" small onClick={onCancel}/>
+                    <ActionBtn label="Deny" variant="danger" small disabled={!reason.trim()} onClick={() => onConfirm(reason)}/>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ── Release history ───────────────────────────────────────────────────────────
+
+/** Lives in its own dedicated Releases tab now — no reason to also make the
+ *  user click to expand it within that tab, so it just loads on mount. */
+function ReleaseHistory({ id }: { id: string }) {
+    const [releases, setReleases] = useState<Release[]>([]);
+    const [loading, setLoading]   = useState(true);
+
+    useEffect(() => {
+        let cancelled = false;
+        setLoading(true);
+        mpFetchReleases(id)
+            .then(r => { if (!cancelled) setReleases(r); })
+            .catch(() => { /* offline */ })
+            .finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
+    }, [id]);
+
+    return (
+        <div>
+            {loading ? (
+                <p style={{ fontSize: 11, color: "#2a2a2a" }}>Loading…</p>
+            ) : releases.length === 0 ? (
+                <p style={{ fontSize: 11, color: "#2a2a2a" }}>No releases yet</p>
+            ) : (
+                <div>
+                    {releases.map((r, i) => (
+                            <div key={r.version} style={{
+                                paddingBottom: 12, marginBottom: i < releases.length - 1 ? 12 : 0,
+                                borderBottom: i < releases.length - 1 ? "1px solid #0f0f0f" : "none",
+                            }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                                    <span style={{ fontSize: 11, fontWeight: 700, color: "#555" }}>v{r.version}</span>
+                                    {i === 0 && <Chip label="Latest" accent/>}
+                                    <span style={{ fontSize: 10, color: "#252525" }}>
+                                        {new Date(r.pub_date).toLocaleDateString()}
+                                    </span>
+                                </div>
+                                {r.changelog ? (
+                                    <pre style={{
+                                        fontSize: 11, color: "#333", lineHeight: 1.5,
+                                        whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0,
+                                    }}>{r.changelog}</pre>
+                                ) : (
+                                    <span style={{ fontSize: 11, color: "#252525", fontStyle: "italic" }}>No changelog</span>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
+        </div>
+    );
+}
+
+// ── Edit metadata form ────────────────────────────────────────────────────────
+
+interface MetaForm { name: string; description: string; icon: string; color: string; tags: string; category: MarketplaceCategory | undefined; }
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+function EditMetaPanel({ entry, onSaved, onCancel }: {
+    entry: CatalogEntry; onSaved: () => void; onCancel: () => void;
+}) {
+    const [form, setForm] = useState<MetaForm>({
+        name:        entry.name,
+        description: entry.description,
+        icon:        entry.icon,
+        color:       entry.color ?? "",
+        tags:        (entry.tags ?? []).join(", "),
+        category:    (entry.category ?? undefined) as MarketplaceCategory | undefined,
+    });
+    const [saving, setSaving] = useState(false);
+    const [err, setErr]       = useState<string | null>(null);
+
+    const colorValid = form.color.trim() === "" || HEX_COLOR_RE.test(form.color.trim());
+
+    const save = async () => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        if (!colorValid) { setErr("Color must be a 6-digit hex code like #7c3aed"); return; }
+        setSaving(true); setErr(null);
+        try {
+            await mpUpdateMeta(entry.marketplaceId, {
+                name:        form.name.trim(),
+                description: form.description.trim(),
+                icon:        form.icon.trim(),
+                color:       form.color.trim() || null,
+                tags:        form.tags.split(",").map(t => t.trim()).filter(Boolean),
+                category:    form.category ?? null,
+            }, token);
+            onSaved();
+        } catch (e) { setErr(String(e)); }
+        finally { setSaving(false); }
+    };
+
+    return (
+        <div style={{ marginTop: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "0 12px", marginBottom: 14 }}>
+                <div>
+                    <FieldLabel>Name</FieldLabel>
+                    <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} style={inputStyle}/>
+                </div>
+                <div>
+                    <FieldLabel>Icon</FieldLabel>
+                    <input value={form.icon} onChange={e => setForm(f => ({ ...f, icon: e.target.value }))} style={inputStyle}/>
+                </div>
+                <div>
+                    <FieldLabel>Accent color</FieldLabel>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <span style={{
+                            width: 30, height: 30, borderRadius: 6, flexShrink: 0,
+                            border: "1px solid #222",
+                            backgroundColor: colorValid && form.color.trim() ? form.color.trim() : "#161616",
+                        }}/>
+                        <input value={form.color} placeholder="#7c3aed"
+                            onChange={e => setForm(f => ({ ...f, color: e.target.value }))}
+                            style={{ ...inputStyle, borderColor: colorValid ? undefined : "#ef4444" }}/>
+                    </div>
+                </div>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+                <FieldLabel>Description</FieldLabel>
+                <textarea rows={4} value={form.description}
+                    onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                    style={{ ...inputStyle, resize: "vertical" as const }}/>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+                <FieldLabel>Tags (comma-separated)</FieldLabel>
+                <input value={form.tags} onChange={e => setForm(f => ({ ...f, tags: e.target.value }))} style={inputStyle}/>
+            </div>
+
+            <div style={{ marginBottom: 18 }}>
+                <MCategoryField value={form.category} onChange={v => setForm(f => ({ ...f, category: v }))}/>
+            </div>
+
+            {err && <p style={{ fontSize: 11, color: "#ef4444", marginBottom: 10 }}>{err}</p>}
+            <div style={{ display: "flex", gap: 8 }}>
+                <ActionBtn label="Save changes" variant="primary" small loading={saving} onClick={save}/>
+                <ActionBtn label="Cancel" variant="ghost" small onClick={onCancel}/>
+            </div>
+        </div>
+    );
+}
+
+// ── Add release form ──────────────────────────────────────────────────────────
+
+type ReleaseSourceType = "direct" | "github";
+
+function AddReleasePanel({ entry, onSaved, onCancel }: {
+    entry: CatalogEntry; onSaved: () => void; onCancel: () => void;
+}) {
+    const [source, setSource]           = useState<ReleaseSourceType>("github");
+    const [version, setVersion]         = useState("");
+    const [downloadUrl, setDownloadUrl] = useState("");
+    const [checksum, setChecksum]       = useState("");
+    const [changelog, setChangelog]     = useState("");
+    const [ghRepo, setGhRepo]           = useState("");
+    const [ghDir, setGhDir]             = useState("");
+    const [ghTag, setGhTag]             = useState("");
+    const [saving, setSaving]           = useState(false);
+    const [err, setErr]                 = useState<string | null>(null);
+
+    const save = async () => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setSaving(true); setErr(null);
+        try {
+            if (source === "github") {
+                if (!ghRepo.trim()) { setErr("GitHub repo is required (owner/repo)"); setSaving(false); return; }
+                await mpAddRelease(entry.marketplaceId, {
+                    source_type: "github", github_repo: ghRepo.trim(),
+                    github_dir:  ghDir.trim() || undefined,
+                    github_tag:  ghTag.trim() || undefined,
+                    version:     version.trim() || undefined,
+                    changelog:   changelog.trim() || undefined,
+                }, token);
+            } else {
+                if (!version.trim() || !downloadUrl.trim()) { setErr("Version and download URL are required."); setSaving(false); return; }
+                await mpAddRelease(entry.marketplaceId, {
+                    version: version.trim(), download_url: downloadUrl.trim(),
+                    checksum: checksum.trim(), changelog: changelog.trim(),
+                }, token);
+            }
+            onSaved();
+        } catch (e) { setErr(String(e)); }
+        finally { setSaving(false); }
+    };
+
+    const field = (label: string, value: string, onChange: (v: string) => void, placeholder?: string, multi?: boolean) => (
+        <div style={{ marginBottom: 14 }}>
+            <FieldLabel>{label}</FieldLabel>
+            {multi
+                ? <textarea rows={3} value={value} placeholder={placeholder} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, resize: "vertical" as const }}/>
+                : <input value={value} placeholder={placeholder} onChange={e => onChange(e.target.value)} style={inputStyle}/>
+            }
+        </div>
+    );
+
+    return (
+        <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+                {(["github", "direct"] as ReleaseSourceType[]).map(t => (
+                    <button key={t} onClick={() => setSource(t)} style={{
+                        padding: "6px 14px", fontSize: 11, fontWeight: 600, borderRadius: 6, cursor: "pointer",
+                        background: source === t ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+                        color: source === t ? "var(--color-accent)" : "#555",
+                        border: `1px solid ${source === t ? "color-mix(in srgb, var(--color-accent) 28%, transparent)" : "#222"}`,
+                    }}>
+                        {t === "github" ? "GitHub" : "Direct URL"}
+                    </button>
+                ))}
+            </div>
+            {source === "github" ? (
+                <>
+                    {field("Repo (owner/repo)", ghRepo, setGhRepo, "GD-LevelReqBot/marketplace")}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
+                        {field("Dist path (within repo)", ghDir, setGhDir, "dist/my-module/1.0.0")}
+                        {field("Tag (optional)", ghTag, setGhTag, "v1.2.3")}
+                    </div>
+                    {field("Override version (optional)", version, setVersion, "auto from tag")}
+                    {field("Override changelog (optional)", changelog, setChangelog, "Leave blank to pull from release notes", true)}
+                </>
+            ) : (
+                <>
+                    {field("Version", version, setVersion, "1.2.3")}
+                    {field("Download URL", downloadUrl, setDownloadUrl, "https://…/package.gdmod")}
+                    {field("SHA-256 checksum (optional)", checksum, setChecksum)}
+                    {field("Changelog", changelog, setChangelog, "What's new…", true)}
+                </>
+            )}
+            {err && <p style={{ fontSize: 11, color: "#ef4444", marginBottom: 10 }}>{err}</p>}
+            <div style={{ display: "flex", gap: 8 }}>
+                <ActionBtn label="Publish release" variant="primary" small loading={saving} onClick={save}/>
+                <ActionBtn label="Cancel" variant="ghost" small onClick={onCancel}/>
+            </div>
+        </div>
+    );
+}
+
+// ── Resource panel ────────────────────────────────────────────────────────────
+
+/** Recommended dimensions per resource type — shown as guidance and used to
+ *  soft-warn (not block) on upload if the picked image is way off. */
+const RESOURCE_GUIDANCE: Record<ResourceRecord["resource_type"], { recommended: string; ratio?: number; ratioLabel?: string }> = {
+    icon:       { recommended: "512×512px, square",              ratio: 1,     ratioLabel: "1:1" },
+    screenshot: { recommended: "1280×720px or larger",            ratio: 16/9,  ratioLabel: "16:9" },
+    banner:     { recommended: "1920×480px, wide",                ratio: 4,     ratioLabel: "4:1" },
+    asset:      { recommended: "Any size — bundled file, not shown in the catalog" },
+};
+
+const RESOURCE_TYPE_ORDER: ResourceRecord["resource_type"][] = ["icon", "banner", "screenshot", "asset"];
+
+function readImageDimensions(file: File): Promise<{ width: number; height: number } | null> {
+    return new Promise(resolve => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => { resolve({ width: img.naturalWidth, height: img.naturalHeight }); URL.revokeObjectURL(url); };
+        img.onerror = () => { resolve(null); URL.revokeObjectURL(url); };
+        img.src = url;
+    });
+}
+
+function formatBytes(n: number): string {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+interface PendingUpload { file: File; width: number; height: number; warning: string; }
+
+function ResourcePanel({ entry, onCancel }: { entry: CatalogEntry; onCancel: () => void }) {
+    const [uploading, setUploading] = useState(false);
+    const [err, setErr]             = useState<string | null>(null);
+    const [resources, setResources] = useState<ResourceRecord[]>((entry.resources ?? []) as ResourceRecord[]);
+    const [dims, setDims]           = useState<Record<number, { width: number; height: number }>>({});
+    const [pending, setPending]     = useState<PendingUpload | null>(null);
+    const fileRef   = useRef<HTMLInputElement>(null);
+    const [type, setType] = useState<ResourceRecord["resource_type"]>("screenshot");
+
+    const doUpload = async (file: File) => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setUploading(true); setErr(null); setPending(null);
+        try { const rec = await mpUploadResource(entry.marketplaceId, file, type, token); setResources(r => [...r, rec]); }
+        catch (e) { setErr(String(e)); }
+        finally { setUploading(false); }
+    };
+
+    const onFilePicked = async (file: File) => {
+        setErr(null);
+        const size = await readImageDimensions(file);
+        const guidance = RESOURCE_GUIDANCE[type];
+        if (size && guidance.ratio) {
+            const actualRatio = size.width / size.height;
+            const off = Math.abs(actualRatio - guidance.ratio) / guidance.ratio;
+            if (off > 0.2) { // >20% off the target aspect ratio — worth flagging, not blocking
+                setPending({
+                    file, width: size.width, height: size.height,
+                    warning: `This image is ${size.width}×${size.height} (${actualRatio >= 1 ? (actualRatio).toFixed(2) : `1:${(1 / actualRatio).toFixed(2)}`}) — ${type} is recommended around ${guidance.ratioLabel}, ${guidance.recommended}.`,
+                });
+                return;
+            }
+        }
+        doUpload(file);
+    };
+
+    const del = async (id: number) => {
+        const token = await getLicenseToken();
+        if (!token) return;
+        try { await mpDeleteResource(entry.marketplaceId, id, token); setResources(r => r.filter(x => x.id !== id)); }
+        catch (e) { setErr(String(e)); }
+    };
+
+    const grouped = RESOURCE_TYPE_ORDER
+        .map(t => ({ type: t, items: resources.filter(r => r.resource_type === t) }))
+        .filter(g => g.items.length > 0);
+
+    return (
+        <div style={{ marginTop: 14 }}>
+            <FieldLabel>Uploaded assets</FieldLabel>
+            {grouped.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 18 }}>
+                    {grouped.map(g => (
+                        <div key={g.type}>
+                            <div style={{ fontSize: 10, fontWeight: 600, color: "#3a3a3a", textTransform: "capitalize" as const, marginBottom: 6 }}>
+                                {g.type} <span style={{ color: "#252525" }}>({g.items.length})</span>
+                            </div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                                {g.items.map(r => (
+                                    <div key={r.id} style={{ width: g.type === "banner" ? 180 : 100 }}>
+                                        <div style={{ position: "relative" }}>
+                                            <img src={r.url} alt={r.filename}
+                                                onLoad={e => {
+                                                    const t = e.currentTarget;
+                                                    setDims(d => d[r.id] ? d : { ...d, [r.id]: { width: t.naturalWidth, height: t.naturalHeight } });
+                                                }}
+                                                style={{
+                                                    width: "100%", height: g.type === "icon" ? 100 : g.type === "banner" ? 45 : 72,
+                                                    objectFit: "cover" as const, borderRadius: 7, border: "1px solid #222", display: "block",
+                                                    backgroundColor: "#0a0a0a",
+                                                }}/>
+                                            <button onClick={() => del(r.id)} title="Remove" style={{
+                                                position: "absolute", top: 4, right: 4,
+                                                width: 18, height: 18, borderRadius: 4, fontSize: 10, fontWeight: 700,
+                                                backgroundColor: "rgba(0,0,0,0.7)", color: "#f87171", border: "1px solid #ef444455", cursor: "pointer", lineHeight: 1,
+                                            }}>✕</button>
+                                        </div>
+                                        <p style={{
+                                            fontSize: 9, color: "#333", margin: "4px 0 0", whiteSpace: "nowrap",
+                                            overflow: "hidden", textOverflow: "ellipsis",
+                                        }} title={r.filename}>
+                                            {r.filename || "—"}
+                                        </p>
+                                        {dims[r.id] && (
+                                            <p style={{ fontSize: 9, color: "#252525", margin: "1px 0 0" }}>
+                                                {dims[r.id].width}×{dims[r.id].height}
+                                            </p>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                <p style={{ fontSize: 11, color: "#2a2a2a", marginBottom: 16 }}>No screenshots, banners, or assets uploaded yet.</p>
+            )}
+
+            <FieldLabel>Upload as</FieldLabel>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+                {/* "asset" intentionally hidden — assets are bundled inside the module's
+                    own package (.gdmod), not uploaded as a separate marketplace resource. */}
+                {(["screenshot", "banner", "icon"] as ResourceRecord["resource_type"][]).map(t => (
+                    <button key={t} onClick={() => { setType(t); setPending(null); }} style={{
+                        fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 6, cursor: "pointer",
+                        textTransform: "capitalize" as const,
+                        backgroundColor: type === t ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+                        color: type === t ? "var(--color-accent)" : "#555",
+                        border: `1px solid ${type === t ? "color-mix(in srgb, var(--color-accent) 28%, transparent)" : "#222"}`,
+                    }}>{t}</button>
+                ))}
+            </div>
+            <p style={{ fontSize: 10, color: "#333", marginBottom: 14 }}>
+                Recommended: {RESOURCE_GUIDANCE[type].recommended}
+            </p>
+
+            {pending && (
+                <div style={{
+                    marginBottom: 14, padding: "10px 12px", borderRadius: 7,
+                    backgroundColor: "#130e00", border: "1px solid #3a280033",
+                }}>
+                    <p style={{ fontSize: 11, color: "#fbbf2488", lineHeight: 1.5, margin: "0 0 8px" }}>
+                        ⚠ {pending.warning} ({formatBytes(pending.file.size)})
+                    </p>
+                    <div style={{ display: "flex", gap: 8 }}>
+                        <ActionBtn label="Upload anyway" variant="warn" small loading={uploading} onClick={() => doUpload(pending.file)}/>
+                        <ActionBtn label="Pick a different image" variant="ghost" small onClick={() => { setPending(null); fileRef.current?.click(); }}/>
+                    </div>
+                </div>
+            )}
+
+            <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) onFilePicked(f); e.target.value = ""; }}/>
+            {err && <p style={{ fontSize: 11, color: "#ef4444", marginBottom: 10 }}>{err}</p>}
+            <div style={{ display: "flex", gap: 8 }}>
+                <ActionBtn label={uploading ? "Uploading…" : `Upload ${type}`} variant="primary" small
+                    loading={uploading} disabled={!!pending} onClick={() => fileRef.current?.click()}/>
+                <ActionBtn label="Done" variant="ghost" small onClick={onCancel}/>
+            </div>
+        </div>
+    );
+}
+
+// ── Username search (co-owner picker) ───────────────────────────────────────
+
+/** Debounced username autocomplete, floating-ui + portal — matches the app's
+ *  other floating menus (Select, AccountWidget) instead of a native input. */
+function UserSearchField({ onPick, disabled }: { onPick: (u: UserSearchResult) => void; disabled?: boolean }) {
+    const [query, setQuery] = useState("");
+    const [results, setResults] = useState<UserSearchResult[]>([]);
+    const [searching, setSearching] = useState(false);
+    const [open, setOpen] = useState(false);
+    const [pos, setPos] = useState({ top: -9999, left: -9999, width: 0 });
+    const inputRef = useRef<HTMLInputElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
+    const reqId = useRef(0);
+
+    const reposition = useCallback(() => {
+        if (!inputRef.current || !menuRef.current) return;
+        computePosition(inputRef.current, menuRef.current, {
+            placement: "bottom-start",
+            middleware: [offset(4), flip(), shift({ padding: 8 })],
+        }).then(({ x, y }) => setPos({ top: y, left: x, width: inputRef.current!.offsetWidth }));
+    }, []);
+
+    useEffect(() => {
+        const q = query.trim();
+        if (q.length < 2) { setResults([]); setOpen(false); return; }
+        const id = ++reqId.current;
+        setSearching(true);
+        const t = setTimeout(async () => {
+            const token = await getLicenseToken();
+            if (!token) { setSearching(false); return; }
+            try {
+                const r = await mpSearchUsers(q, token);
+                if (id === reqId.current) { setResults(r); setOpen(true); }
+            } catch { /* transient search failure — just show no results */ }
+            finally { if (id === reqId.current) setSearching(false); }
+        }, 250);
+        return () => clearTimeout(t);
+    }, [query]);
+
+    useEffect(() => {
+        if (!open) return;
+        reposition();
+        const close = (e: MouseEvent) => {
+            if (!menuRef.current?.contains(e.target as Node) && !inputRef.current?.contains(e.target as Node)) setOpen(false);
+        };
+        document.addEventListener("mousedown", close);
+        return () => document.removeEventListener("mousedown", close);
+    }, [open, reposition, results]);
+
+    const pick = (u: UserSearchResult) => {
+        onPick(u);
+        setQuery("");
+        setResults([]);
+        setOpen(false);
+    };
+
+    return (
+        <div style={{ position: "relative", flex: 1 }}>
+            <input
+                ref={inputRef}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                onFocus={() => { if (results.length > 0) setOpen(true); }}
+                placeholder="Search by GitHub username…"
+                disabled={disabled}
+                style={{ ...inputStyle, width: "auto" }}
+            />
+            {open && createPortal(
+                <div ref={menuRef} style={{
+                    position: "fixed", top: pos.top, left: pos.left, minWidth: pos.width, zIndex: 9999,
+                    backgroundColor: "#111", border: "1px solid #242424", borderRadius: 8,
+                    padding: "4px 0", maxHeight: 220, overflowY: "auto",
+                    boxShadow: "0 12px 32px rgba(0,0,0,0.8)",
+                }}>
+                    {searching && <div style={{ padding: "6px 10px", fontSize: 11, color: "#444" }}>Searching…</div>}
+                    {!searching && results.length === 0 && (
+                        <div style={{ padding: "6px 10px", fontSize: 11, color: "#444" }}>No matching users</div>
+                    )}
+                    {results.map(u => (
+                        <button
+                            key={u.github_id}
+                            type="button"
+                            onClick={() => pick(u)}
+                            style={{
+                                display: "block", width: "100%", textAlign: "left",
+                                padding: "6px 10px", fontSize: 11, color: "#aaa",
+                                background: "none", border: "none", cursor: "pointer",
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.backgroundColor = "#1a1a1a"; }}
+                            onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                        >
+                            {u.github_username}
+                        </button>
+                    ))}
+                </div>,
+                document.body
+            )}
+        </div>
+    );
+}
+
+// ── Owning team assign/remove ────────────────────────────────────────────────
+// Assigns or clears which standalone Team owns this package outright — a
+// single-step swap, distinct from managing a team's own membership roster
+// (Account Settings) or the flat per-package co-owner list (TeamPanel below).
+
+function OwningTeamPanel({ entry, onChanged }: { entry: CatalogEntry; onChanged?: () => void }) {
+    const [myTeams, setMyTeams]   = useState<Team[]>([]);
+    const [picked, setPicked]     = useState<number | "">("");
+    const [busy, setBusy]         = useState(false);
+    const [err, setErr]           = useState<string | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        getLicenseToken().then(token => {
+            if (!token) return;
+            mpMyTeams(token).then(teams => { if (!cancelled) setMyTeams(teams); }).catch(() => {});
+        });
+        return () => { cancelled = true; };
+    }, []);
+
+    const assign = async () => {
+        if (!picked) return;
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setBusy(true); setErr(null);
+        try { await mpSetOwnerTeam(entry.marketplaceId, Number(picked), token); setPicked(""); onChanged?.(); }
+        catch (e) { setErr(String(e)); }
+        finally { setBusy(false); }
+    };
+
+    const remove = async () => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setBusy(true); setErr(null);
+        try { await mpSetOwnerTeam(entry.marketplaceId, null, token); onChanged?.(); }
+        catch (e) { setErr(String(e)); }
+        finally { setBusy(false); }
+    };
+
+    return (
+        <div style={{ marginBottom: 16 }}>
+            <FieldLabel>Owning team</FieldLabel>
+            {entry.owner_team_id ? (
+                <div style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "7px 10px", borderRadius: 7,
+                    backgroundColor: "#0e0e0e", border: "1px solid #1e1e1e",
+                }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "#999", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {entry.owner_team_name ?? "Team"}
+                        {entry.owner_team_vanity && <span style={{ color: "#3a3a3a" }}> ({entry.owner_team_vanity})</span>}
+                    </span>
+                    <ActionBtn label="Remove team" variant="danger" small loading={busy} onClick={remove}/>
+                </div>
+            ) : myTeams.length > 0 ? (
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <select
+                        value={picked}
+                        onChange={e => setPicked(e.target.value ? Number(e.target.value) : "")}
+                        style={{ ...inputStyle, width: "auto", flex: 1 }}
+                    >
+                        <option value="">Select a team you belong to…</option>
+                        {myTeams.map(t => (
+                            <option key={t.id} value={t.id}>{t.name} ({t.vanity})</option>
+                        ))}
+                    </select>
+                    <ActionBtn label="Assign" small loading={busy} disabled={!picked} onClick={assign}/>
+                </div>
+            ) : (
+                <p style={{ fontSize: 11, color: "#2a2a2a" }}>
+                    Not team-owned — individually owned via the co-owner list below.
+                    You don't belong to any teams to assign one; create one in Account Settings.
+                </p>
+            )}
+            {err && <p style={{ fontSize: 11, color: "#ef4444", marginTop: 6 }}>{err}</p>}
+        </div>
+    );
+}
+
+// ── Package owners panel ─────────────────────────────────────────────────────
+// Flat per-package co-owner list — only meaningful when the package isn't
+// owned by a standalone Team (see Account Settings for that; a team-owned
+// package's owners are the team's roster, managed there instead).
+
+function TeamPanel({ entry, onOwnerChanged }: { entry: CatalogEntry; onOwnerChanged?: () => void }) {
+    const [team, setTeam]         = useState<PackageOwner[]>([]);
+    const [loading, setLoading]   = useState(true);
+    const [busyId, setBusyId]     = useState<number | null>(null);
+    const [adding, setAdding]     = useState(false);
+    const [err, setErr]           = useState<string | null>(null);
+
+    const load = useCallback(async () => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); setLoading(false); return; }
+        setLoading(true);
+        try { setTeam(await mpFetchPackageOwners(entry.marketplaceId, token)); }
+        catch (e) { setErr(String(e)); }
+        finally { setLoading(false); }
+    }, [entry.marketplaceId]);
+
+    useEffect(() => { load(); }, [load]);
+
+    const add = async (user: UserSearchResult) => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setAdding(true); setErr(null);
+        try { await mpAddPackageOwner(entry.marketplaceId, user.github_id, token); await load(); }
+        catch (e) { setErr(String(e)); }
+        finally { setAdding(false); }
+    };
+
+    const remove = async (githubId: number) => {
+        const token = await getLicenseToken();
+        if (!token) { setErr("Not authenticated"); return; }
+        setBusyId(githubId); setErr(null);
+        try { await mpRemovePackageOwner(entry.marketplaceId, githubId, token); await load(); }
+        catch (e) { setErr(String(e)); }
+        finally { setBusyId(null); }
+    };
+
+    const isTeamOwned = !!entry.owner_team_id;
+
+    return (
+        <div style={{ marginTop: 14 }}>
+            <OwningTeamPanel entry={entry} onChanged={onOwnerChanged}/>
+
+            {isTeamOwned && (
+                <p style={{ fontSize: 10, color: "#2a2a2a", marginBottom: 16 }}>
+                    This package is owned by the team above — its members are the effective
+                    owners and the co-owner list below is unused while a team owns it.
+                </p>
+            )}
+
+            <FieldLabel>Co-owners</FieldLabel>
+            {loading ? (
+                <p style={{ fontSize: 11, color: "#2a2a2a", marginBottom: 16 }}>Loading…</p>
+            ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+                    {team.length === 0 && (
+                        <p style={{ fontSize: 11, color: "#2a2a2a" }}>No co-owners yet</p>
+                    )}
+                    {team.map(m => (
+                        <div key={m.github_id} style={{
+                            display: "flex", alignItems: "center", gap: 10,
+                            padding: "7px 10px", borderRadius: 7,
+                            backgroundColor: "#0e0e0e", border: "1px solid #1e1e1e",
+                        }}>
+                            <img
+                                src={`https://avatars.githubusercontent.com/u/${m.github_id}?v=4&s=48`}
+                                alt="" width={24} height={24}
+                                style={{ borderRadius: "50%", flexShrink: 0, backgroundColor: "#161616", border: "1px solid #222" }}
+                                onError={e => { e.currentTarget.style.visibility = "hidden"; }}
+                            />
+                            <span style={{ fontSize: 12, fontWeight: 600, color: "#999", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {m.github_username ? m.github_username : `#${m.github_id}`}
+                            </span>
+                            <span style={{ fontSize: 10, color: "#3a3a3a", flexShrink: 0 }}>
+                                since {new Date(m.added_at).toLocaleDateString()}
+                            </span>
+                            <ActionBtn
+                                label="Remove" variant="danger" small
+                                loading={busyId === m.github_id}
+                                disabled={team.length <= 1}
+                                onClick={() => remove(m.github_id)}
+                            />
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            <div style={{ marginBottom: 10 }}>
+                <FieldLabel>Add co-owner</FieldLabel>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <UserSearchField onPick={add} disabled={adding}/>
+                    {adding && <span style={{ fontSize: 10, color: "#444", flexShrink: 0 }}>Adding…</span>}
+                </div>
+                <p style={{ fontSize: 10, color: "#2a2a2a", marginTop: 6 }}>
+                    Search by GitHub username. They must have signed into the marketplace at least once.
+                </p>
+            </div>
+
+            {err && <p style={{ fontSize: 11, color: "#ef4444" }}>{err}</p>}
+        </div>
+    );
+}
+
+// ── Owner panel ───────────────────────────────────────────────────────────────
+
+type OwnerTab = "none" | "edit" | "release" | "resources" | "team";
+
+function OwnerPanel({ entry, isAdmin, onApproved, onDenied, onMetaSaved, onReleaseSaved, onPublished, onDeleted }: {
+    entry: CatalogEntry; isAdmin: boolean;
+    onApproved?: () => void; onDenied?: () => void; onMetaSaved?: () => void;
+    onReleaseSaved?: () => void; onPublished?: () => void; onDeleted?: () => void;
+}) {
+    const [tab, setTab]               = useState<OwnerTab>("none");
+    const [showDenyModal, setDenyModal] = useState(false);
+    const [deleteConfirm, setDeleteConfirm] = useState(false);
+    const [busy, setBusy]             = useState(false);
+
+    useEffect(() => { setTab("none"); setDeleteConfirm(false); }, [entry.id]);
+
+    const isPublished = !entry.status || entry.status === "published";
+
+    const run = async (fn: (t: string) => Promise<void>, cb?: () => void) => {
+        const t = await getLicenseToken();
+        if (!t) return;
+        setBusy(true);
+        try { await fn(t); cb?.(); }
+        finally { setBusy(false); }
+    };
+
+    const handleDeny = (reason: string) => {
+        setDenyModal(false);
+        run(t => mpDeny(entry.marketplaceId, reason, t), onDenied);
+    };
+
+    const ownerTabs: { key: OwnerTab; label: string }[] = [
+        { key: "edit",      label: "Edit" },
+        { key: "release",   label: "Release" },
+        { key: "resources", label: "Resources" },
+        { key: "team",      label: "Team" },
+    ];
+
+    const hasModerationRow = entry.status === "pending" || entry.status === "draft" || entry.status === "denied" || isAdmin;
+
+    return (
+        <div style={{
+            backgroundColor: "#0b0b0f", border: "1px solid #1c1c26",
+            borderRadius: 10, padding: "16px 18px",
+        }}>
+            {/* Moderation actions — approve/deny/publish/delete — kept separate
+                from the edit/release/resources/team tabs below, since these are
+                one-shot lifecycle actions, not panels to switch between. */}
+            {hasModerationRow && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid #17171f" }}>
+                    {entry.status === "pending" && (
+                        <>
+                            <ActionBtn label="Approve" variant="primary" loading={busy} onClick={() => run(t => mpApprove(entry.marketplaceId, t), onApproved)}/>
+                            <ActionBtn label="Deny…"   variant="danger"  loading={busy} onClick={() => setDenyModal(true)}/>
+                        </>
+                    )}
+                    {entry.status !== "pending" && isAdmin && (
+                        <ActionBtn
+                            label={isPublished ? "Unpublish" : "Publish"}
+                            variant={isPublished ? "ghost" : "primary"}
+                            loading={busy}
+                            onClick={() => run(t => mpPublish(entry.marketplaceId, !isPublished, t), onPublished)}
+                        />
+                    )}
+                    {(entry.status === "draft" || entry.status === "denied") && (
+                        <ActionBtn label="Deny…" variant="danger" loading={busy} onClick={() => setDenyModal(true)}/>
+                    )}
+                    {isAdmin && (
+                        <ActionBtn
+                            label={deleteConfirm ? "Confirm delete" : "Delete"}
+                            variant="danger" loading={busy}
+                            onClick={() => {
+                                if (!deleteConfirm) { setDeleteConfirm(true); return; }
+                                setDeleteConfirm(false);
+                                run(t => mpDeleteModule(entry.marketplaceId, t), onDeleted);
+                            }}
+                        />
+                    )}
+                </div>
+            )}
+
+            <TabStrip<OwnerTab>
+                tabs={ownerTabs}
+                active={tab}
+                onChange={t => setTab(p => p === t ? "none" : t)}
+                small
+            />
+
+            {tab === "none" && (
+                <p style={{ fontSize: 11, color: "#333", margin: 0 }}>
+                    Edit this package's listing, publish a new release, manage its screenshots, or add a co-owner.
+                </p>
+            )}
+            {tab === "edit"      && <EditMetaPanel   entry={entry} onSaved={() => { setTab("none"); onMetaSaved?.(); }}    onCancel={() => setTab("none")}/>}
+            {tab === "release"   && <AddReleasePanel entry={entry} onSaved={() => { setTab("none"); onReleaseSaved?.(); }} onCancel={() => setTab("none")}/>}
+            {tab === "resources" && <ResourcePanel   entry={entry} onCancel={() => setTab("none")}/>}
+            {tab === "team"      && <TeamPanel       entry={entry} onOwnerChanged={onMetaSaved}/>}
+
+            {showDenyModal && <DenyModal onConfirm={handleDeny} onCancel={() => setDenyModal(false)}/>}
+        </div>
+    );
+}
+
+// ── Module detail ─────────────────────────────────────────────────────────────
+
+type DetailTab = "overview" | "releases" | "reviews" | "manage";
+
+export interface ModuleDetailProps {
+    entry: CatalogEntry;
+    account: AccountState;
+    busy: boolean;
+    progress: InstallProgress | null;
+    onInstall: () => void;
+    onUninstall: () => void;
+    onUpdate: () => void;
+    onRefresh?: () => void;
+    onHardRefresh?: () => void;
+    onApproved?: () => void;
+    onDenied?: () => void;
+    onMetaSaved?: () => void;
+    onReleaseSaved?: () => void;
+    onPublished?: () => void;
+    onDeleted?: () => void;
+}
+
+export function ModuleDetail({
+    entry, account, busy, progress,
+    onInstall, onUninstall, onUpdate, onRefresh, onHardRefresh,
+    onApproved, onDenied, onMetaSaved, onReleaseSaved, onPublished, onDeleted,
+}: ModuleDetailProps) {
+    const [removeConfirm, setRemoveConfirm]   = useState(false);
+    const [botCommands, setBotCommands]       = useState<BotCommand[]>([]);
+    const shiftHeldRef = useRef(false);
+    const [shiftHeld, setShiftHeld] = useState(false);
+
+    // Reactive shift-key state so the Refresh button can visibly relabel
+    // itself to "Hard Refresh" while held — shiftHeldRef (above) is the one
+    // actually read at click time, this is purely for the label/style.
+    useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftHeld(true); };
+        const onKeyUp   = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftHeld(false); };
+        const onBlur    = () => setShiftHeld(false);
+        window.addEventListener("keydown", onKeyDown);
+        window.addEventListener("keyup", onKeyUp);
+        window.addEventListener("blur", onBlur);
+        return () => {
+            window.removeEventListener("keydown", onKeyDown);
+            window.removeEventListener("keyup", onKeyUp);
+            window.removeEventListener("blur", onBlur);
+        };
+    }, []);
+    const [health, setHealth]                 = useState<PreflightIssue[] | null>(null);
+    const [healthLoading, setHealthLoading]   = useState(false);
+    const [showReport, setShowReport]         = useState(false);
+    const [reportBusy, setReportBusy]         = useState(false);
+    const [reportErr, setReportErr]           = useState<string | null>(null);
+    const [detailTab, setDetailTab]           = useState<DetailTab>("overview");
+    const [lightbox, setLightbox]             = useState<string | null>(null);
+    const isPublished = !entry.status || entry.status === "published";
+    const isPending   = entry.status === "pending";
+    const isDenied    = entry.status === "denied";
+    const commands    = (entry.manifest as Record<string, unknown>)?.commands as Array<{ trigger: string; builtin_key?: string }> | undefined;
+    const screenshots = entry.resources?.filter(r => r.resource_type === "screenshot") ?? [];
+    // Synthetic entry for a locally-installed module/library that isn't in the
+    // catalog at all (see mergeWithInstalled in useMarketplace.ts) — it has no
+    // real backend record, so every marketplace-API-backed action (releases,
+    // reviews, reports, approve/deny/publish/edit/team) would just fail
+    // against a nonexistent id. Install/update/remove still work fine since
+    // those are local Tauri operations, not marketplace calls.
+    const isLocalOnly = entry.author === "local" || !!entry.isLocalShadow;
+    const canManage   = (account.isOwner || roleAtLeast(account.role, "staff")) && !isLocalOnly;
+    const hasReviews  = isPublished && !entry.verified && !isLocalOnly;
+    const hasReleases = isPublished && !isLocalOnly;
+
+    // Reset remove-confirm and the active tab when the selected entry changes
+    useEffect(() => { setRemoveConfirm(false); setDetailTab("overview"); }, [entry.id]);
+
+    // Reset report modal state when the selected entry changes
+    useEffect(() => { setShowReport(false); setReportErr(null); }, [entry.id]);
+
+    const submitReport = async (reason: ReportReason, details: string) => {
+        const token = await getLicenseToken();
+        if (!token) { setReportErr("Not signed in"); return; }
+        setReportBusy(true); setReportErr(null);
+        try {
+            await mpReportModule(entry.marketplaceId, reason, details, token);
+            setShowReport(false);
+        } catch (e) { setReportErr(String(e)); }
+        finally { setReportBusy(false); }
+    };
+
+    // Load registered bot commands whenever the selected module changes
+    useEffect(() => {
+        getCommands().then(setBotCommands).catch(() => {});
+    }, [entry.id]);
+
+    const runHealth = useCallback(() => {
+        if (!entry.installed) return;
+        setHealthLoading(true);
+        preflightModule(entry.marketplaceId)
+            .then(setHealth)
+            .catch(() => setHealth(null))
+            .finally(() => setHealthLoading(false));
+    }, [entry.id, entry.installed]);
+
+    // Reset health state when selected module changes
+    useEffect(() => { setHealth(null); }, [entry.id]);
+
+    const iconClr = entry.color || iconColor(entry.icon);
+    const banner  = entry.resources?.find(r => r.resource_type === "banner");
+
+    return (
+        <div style={{
+            display: "flex", flexDirection: "column", height: "100%",
+            overflowY: "auto",
+        }}>
+
+            {/* ── Cover strip: a flat band tinted with the module's accent (from
+                its manifest color, or a fallback derived from the icon name),
+                or the uploaded banner image if there is one. Plain and static
+                on purpose — no glow, no motion. */}
+            <div style={{
+                position: "relative", width: "100%", height: 96, flexShrink: 0,
+                overflow: "hidden",
+                backgroundColor: banner ? undefined : `${iconClr}1c`,
+                borderBottom: `1px solid ${iconClr}30`,
+            }}>
+                {banner && (
+                    <img src={banner.url} alt=""
+                        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" as const }}/>
+                )}
+                <div style={{
+                    position: "absolute", inset: 0,
+                    background: "linear-gradient(to bottom, transparent 45%, #070708 100%)",
+                }}/>
+            </div>
+
+            <div style={{ padding: "0 28px 24px", flex: 1 }}>
+
+            {/* ── Header — icon overlaps the cover strip's bottom edge, cut out
+                with a ring matching the page background, instead of sitting
+                flush below it like a plain toolbar row. */}
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 18, marginTop: -30, marginBottom: 16 }}>
+                {/* Icon — a tilted sticker instead of a flush-aligned tile,
+                    with a hard offset shadow instead of a soft blurred one. */}
+                <div style={{
+                    width: 64, height: 64, borderRadius: 16, flexShrink: 0,
+                    backgroundColor: "#111114", border: `3px solid ${iconClr}`,
+                    boxShadow: `4px 4px 0 ${iconClr}55`,
+                    display: "flex", alignItems: "center", justifyContent: "center", color: iconClr,
+                    position: "relative", zIndex: 2, transform: "rotate(-4deg)",
+                }}>
+                    <IconRenderer name={entry.icon} size={30}/>
+                </div>
+
+                {/* Name + meta */}
+                <div style={{ flex: 1, minWidth: 0, marginTop: 26 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                        <h2 style={{
+                            fontSize: 19, fontWeight: 800, color: "#e2e2e2", margin: 0, lineHeight: 1.2,
+                            letterSpacing: "-0.01em", textShadow: `2px 2px 0 ${iconClr}70`,
+                        }}>
+                            {entry.name}
+                        </h2>
+                        {/* This entry is either the online listing or your local dev build —
+                            never both at once (see mergeWithInstalled's devWatch split) — so
+                            its version is always unambiguously its own. */}
+                        {entry.version && (
+                            <span style={{ fontSize: 11, color: "#2a2a2a", fontVariantNumeric: "tabular-nums" as const }}>
+                                v{entry.version}
+                            </span>
+                        )}
+                    </div>
+
+                    {/* Chips */}
+                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 10 }}>
+                        {entry.verified  && <Chip label="Official" accent/>}
+                        {!entry.verified && <Chip label="Community"/>}
+                        {entry.category  && <Chip label={entry.category}/>}
+                        {(entry.package_type ?? "module") === "library" && <Chip label="Library"  color="#60a5fa"/>}
+                        {entry.package_type === "package"               && <Chip label="Bundle"   color="#a78bfa"/>}
+                        {entry.premium                                   && <Chip label="Premium"  color="#f59e0b"/>}
+                        {entry.installed  && !entry.devWatch             && <Chip label="Installed" accent/>}
+                        {entry.devWatch                                  && <Chip label="Local Dev Build" color="#22d3ee"/>}
+                        {entry.updateAvailable                           && <Chip label="Update Available" color="#f59e0b"/>}
+                        {isPending  && <Chip label="Pending Review" color="#f59e0b"/>}
+                        {isDenied   && <Chip label="Denied"         color="#ef4444"/>}
+                        {entry.status === "draft" && <Chip label="Draft" color="#555"/>}
+                        {isLocalOnly && <Chip label="Local Only" color="#888"/>}
+                    </div>
+
+                    {/* Stat pills — author + install/rating/compat as small
+                        dashboard-style tiles instead of a flat "·"-joined line. */}
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                        <StatPill label="author" value={entry.author}/>
+                        {entry.submitter_username && entry.submitter_username !== entry.author && (
+                            <StatPill label="submitted by" value={entry.submitter_username}/>
+                        )}
+                        {entry.downloads > 0 && (
+                            <StatPill label="installs" value={entry.downloads.toLocaleString()}/>
+                        )}
+                        {!!entry.rating_count && entry.rating_count > 0 && (
+                            <StatPill label="rating" value={`★ ${(entry.rating_avg ?? 0).toFixed(1)}`} sub={`${entry.rating_count}`} color="#f59e0b"/>
+                        )}
+                        {entry.min_app_version && (
+                            <StatPill label="requires" value={`v${entry.min_app_version}+`}/>
+                        )}
+                    </div>
+                </div>
+
+                {/* Action buttons — top right */}
+                {isPublished && (
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0, marginTop: 26 }}>
+                        {!entry.installed && (
+                            <ActionBtn label="Install" variant="primary" loading={busy && !!progress} onClick={onInstall}/>
+                        )}
+                        {entry.installed && entry.updateAvailable && (
+                            <ActionBtn label="Update" variant="warn" loading={busy && !!progress}
+                                disabled={!account.username} onClick={onUpdate}/>
+                        )}
+                        {entry.installed && entry.devWatch ? (
+                            // Dev-watched: offer Refresh (reinstall from source) instead of Remove.
+                            // Shift-click does a hard refresh — fully deletes the installed copy
+                            // first instead of only overwriting/adding files. ActionBtn's onClick
+                            // takes no event, so shiftKey is captured on the wrapping span first
+                            // (capture phase runs before the button's own bubble-phase handler).
+                            <span
+                                title={shiftHeld ? "Fully deletes and reinstalls from source" : "Shift-click for a hard refresh (fully deletes and reinstalls)"}
+                                onClickCapture={(e) => { shiftHeldRef.current = e.shiftKey; }}
+                            >
+                                <ActionBtn
+                                    label={shiftHeld ? "⚠ Hard Refresh" : "↺ Refresh"}
+                                    variant={shiftHeld ? "danger" : "ghost"}
+                                    loading={busy && !!progress}
+                                    onClick={() => { (shiftHeldRef.current ? onHardRefresh : onRefresh)?.(); }}/>
+                            </span>
+                        ) : entry.installed && (
+                            removeConfirm ? (
+                                <>
+                                    <span style={{ fontSize: 10, color: "#555" }}>Remove?</span>
+                                    <ActionBtn label="Cancel" variant="ghost" onClick={() => setRemoveConfirm(false)}/>
+                                    <ActionBtn label="Remove" variant="danger" loading={busy && !!progress} onClick={() => { setRemoveConfirm(false); onUninstall(); }}/>
+                                </>
+                            ) : (
+                                <ActionBtn label="Remove" variant="ghost" onClick={() => setRemoveConfirm(true)}/>
+                            )
+                        )}
+                        {account.username && !isLocalOnly && (
+                            <ActionBtn label="Report" variant="ghost" onClick={() => setShowReport(true)}/>
+                        )}
+                    </div>
+                )}
+            </div>
+
+            {/* ── Local dev build source path ── this entry IS the local build
+                (see mergeWithInstalled's devWatch split — a devWatched module
+                and its online listing are two separate, separately-selectable
+                entries, never merged into one row), so just show where it's
+                watching from. */}
+            {entry.devWatch && (
+                <div style={{
+                    display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                    marginBottom: 16, padding: "8px 12px", borderRadius: 6,
+                    backgroundColor: "#081418", border: "1px solid #123a42",
+                }}>
+                    <span style={{ fontSize: 11, color: "#22d3ee" }}>🔧 Watching local source</span>
+                    <span style={{ fontSize: 10, color: "#2a4a50", fontFamily: "monospace" }}>
+                        {entry.devWatch.source_dir}
+                    </span>
+                </div>
+            )}
+
+            {/* ── Progress bar ── */}
+            {progress && <ProgressBar progress={progress}/>}
+
+            {/* ── Denial notice ── */}
+            {isDenied && entry.deny_reason && (
+                <div style={{
+                    marginBottom: 16, padding: "10px 14px", borderRadius: 6,
+                    backgroundColor: "#150a0a", border: "1px solid #3a1414",
+                }}>
+                    <p style={{ fontSize: 9, fontWeight: 700, color: "#7a2020", marginBottom: 4, letterSpacing: "0.08em", textTransform: "uppercase" as const }}>
+                        Denial reason
+                    </p>
+                    <p style={{ fontSize: 12, color: "#666", margin: 0 }}>{entry.deny_reason}</p>
+                </div>
+            )}
+
+            <Divider/>
+
+            {/* ── Top-level tabs ── */}
+            <TabStrip<DetailTab>
+                tabs={[
+                    { key: "overview", label: "Overview" },
+                    ...(hasReleases ? [{ key: "releases" as DetailTab, label: "Releases" }] : []),
+                    ...(hasReviews  ? [{ key: "reviews"  as DetailTab, label: "Reviews"  }] : []),
+                    ...(canManage   ? [{ key: "manage"   as DetailTab, label: "Manage"   }] : []),
+                ]}
+                active={detailTab}
+                onChange={setDetailTab}
+            />
+
+            {detailTab === "overview" && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 260px", gap: 28, alignItems: "start" }}>
+                    {/* ── Left: description, tags, changelog, screenshots ── */}
+                    <div style={{ minWidth: 0 }}>
+                        <p style={{ fontSize: 13, color: "#555", lineHeight: 1.7, margin: 0 }}>
+                            {entry.description || <span style={{ color: "#222", fontStyle: "italic" }}>No description provided.</span>}
+                        </p>
+
+                        {(entry.tags ?? []).filter(t => !["installed", "local"].includes(t)).length > 0 && (
+                            <>
+                                <Divider/>
+                                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                                    {entry.tags.filter(t => !["installed", "local"].includes(t)).map(t => (
+                                        <Chip key={t} label={t}/>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+
+                        {entry.changelog && (
+                            <>
+                                <Divider/>
+                                <SectionLabel label="What's New"/>
+                                <pre style={{
+                                    fontSize: 11, color: "#444", lineHeight: 1.6,
+                                    whiteSpace: "pre-wrap", fontFamily: "inherit",
+                                    backgroundColor: "#0a0a0a", borderRadius: 6,
+                                    padding: "10px 14px", border: "1px solid #111", margin: 0,
+                                }}>{entry.changelog}</pre>
+                            </>
+                        )}
+
+                        {screenshots.length > 0 && (
+                            <>
+                                <Divider/>
+                                <SectionLabel label="Screenshots"/>
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingBottom: 4 }}>
+                                    {screenshots.map(r => (
+                                        <img key={r.id} src={r.url} alt={r.filename || "Screenshot"}
+                                            onClick={() => setLightbox(r.url)}
+                                            style={{ height: 150, width: "auto", flexShrink: 0, borderRadius: 6, border: "1px solid #1a1a1a", objectFit: "cover" as const, cursor: "pointer" }}/>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                    </div>
+
+                    {/* ── Right: commands + health as a standing sidebar, using
+                        the panel's full width instead of stacking everything
+                        into one long narrow column ── */}
+                    <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 20 }}>
+                        {commands && commands.length > 0 && (
+                            <div>
+                                <SectionLabel label="Commands"/>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                    {commands.map(c => {
+                                        const registered = botCommands.find(b =>
+                                            b.trigger === c.trigger ||
+                                            (c.builtin_key && b.builtin_key === c.builtin_key)
+                                        );
+                                        const isActive = registered && registered.enabled;
+                                        return (
+                                            <div key={c.trigger} style={{
+                                                display: "flex", alignItems: "center", gap: 8,
+                                                padding: "5px 8px", borderRadius: 5,
+                                                backgroundColor: "#0e0e0e", border: "1px solid #191919",
+                                            }}>
+                                                <span style={{
+                                                    width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                                                    backgroundColor: isActive ? "#22c55e" : registered ? "#555" : "#2a2a2a",
+                                                    boxShadow: isActive ? "0 0 4px #22c55e66" : "none",
+                                                }}/>
+                                                <span style={{
+                                                    fontSize: 11, fontFamily: "monospace", fontWeight: 600,
+                                                    color: isActive ? "#d4d4d4" : "#444", flex: 1, minWidth: 0,
+                                                    overflow: "hidden", textOverflow: "ellipsis",
+                                                }}>
+                                                    {c.trigger}
+                                                </span>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
+                        {entry.installed && (
+                            <div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                                    <SectionLabel label="Health"/>
+                                    <button
+                                        onClick={runHealth}
+                                        disabled={healthLoading}
+                                        style={{
+                                            marginLeft: "auto", marginBottom: 10,
+                                            fontSize: 10, fontWeight: 600, cursor: "pointer",
+                                            padding: "2px 8px", borderRadius: 4,
+                                            border: "1px solid #1a1a1a", backgroundColor: "transparent",
+                                            color: healthLoading ? "#2a2a2a" : "#333",
+                                        }}
+                                    >
+                                        {healthLoading ? "Checking…" : "↺ Re-check"}
+                                    </button>
+                                </div>
+
+                                {healthLoading && !health && (
+                                    <p style={{ fontSize: 11, color: "#222", fontStyle: "italic" }}>Running checks…</p>
+                                )}
+
+                                {health !== null && (
+                                    health.length === 0 ? (
+                                        <div style={{
+                                            display: "flex", alignItems: "center", gap: 8,
+                                            padding: "8px 12px", borderRadius: 6,
+                                            backgroundColor: "#0a160a", border: "1px solid #1a3a1a",
+                                        }}>
+                                            <span style={{ color: "#22c55e", fontSize: 14 }}>✓</span>
+                                            <span style={{ fontSize: 11, color: "#22c55e88" }}>All checks passed</span>
+                                        </div>
+                                    ) : (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                            {health.map((issue, i) => (
+                                                <div key={i} style={{
+                                                    display: "flex", alignItems: "flex-start", gap: 8,
+                                                    padding: "6px 10px", borderRadius: 5,
+                                                    backgroundColor: issue.severity === "error" ? "#150a0a" : "#130e00",
+                                                    border: `1px solid ${issue.severity === "error" ? "#3a141433" : "#3a280033"}`,
+                                                }}>
+                                                    <span style={{
+                                                        fontSize: 10, flexShrink: 0,
+                                                        color: issue.severity === "error" ? "#f87171" : "#fbbf24",
+                                                        marginTop: 1,
+                                                    }}>
+                                                        {issue.severity === "error" ? "✕" : "⚠"}
+                                                    </span>
+                                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                                        {issue.file && (
+                                                            <div style={{
+                                                                fontSize: 10, color: "#555", fontFamily: "monospace",
+                                                                marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                                            }} title={issue.file}>
+                                                                {issue.file}
+                                                            </div>
+                                                        )}
+                                                        <span style={{
+                                                            fontSize: 11,
+                                                            color: issue.severity === "error" ? "#f8717188" : "#fbbf2488",
+                                                        }}>
+                                                            {issue.message}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )
+                                )}
+                            </div>
+                        )}
+
+                        {!(commands && commands.length > 0) && !entry.installed && (
+                            <p style={{ fontSize: 11, color: "#222", fontStyle: "italic" }}>
+                                No commands or health data yet — install this package to see them here.
+                            </p>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {detailTab === "releases" && hasReleases && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 28, alignItems: "start" }}>
+                    <ReleaseHistory id={entry.marketplaceId}/>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                        <SectionLabel label="This install"/>
+                        <StatCard label="Installed" value={entry.installedVersion ?? "Not installed"}/>
+                        <StatCard label="Latest" value={`v${entry.version}`}/>
+                        <StatCard label="Status" value={entry.updateAvailable ? "Update available" : entry.installed ? "Up to date" : "—"}
+                            color={entry.updateAvailable ? "#f59e0b" : entry.installed ? "#22c55e" : undefined}/>
+                    </div>
+                </div>
+            )}
+
+            {detailTab === "reviews" && hasReviews && (
+                <>
+                    <ModuleFeedback moduleId={entry.marketplaceId} account={account}/>
+                    {!account.username && (
+                        <div style={{
+                            marginTop: 12, padding: "8px 12px", borderRadius: 6,
+                            backgroundColor: "#0a0a0a", border: "1px solid #111",
+                        }}>
+                            <p style={{ fontSize: 11, color: "#2a2a2a", margin: 0 }}>
+                                Sign in via the About page to leave reviews and receive update notifications.
+                            </p>
+                        </div>
+                    )}
+                </>
+            )}
+
+            {detailTab === "manage" && canManage && (
+                <OwnerPanel
+                    entry={entry}
+                    isAdmin={account.isOwner || roleAtLeast(account.role, "admin")}
+                    onApproved={onApproved} onDenied={onDenied}
+                    onMetaSaved={onMetaSaved} onReleaseSaved={onReleaseSaved}
+                    onPublished={onPublished} onDeleted={onDeleted}
+                />
+            )}
+
+            {/* bottom padding */}
+            <div style={{ height: 24 }}/>
+
+            {showReport && (
+                <ReportModal
+                    title={`Report "${entry.name}"`}
+                    busy={reportBusy}
+                    err={reportErr}
+                    onClose={() => setShowReport(false)}
+                    onSubmit={submitReport}
+                />
+            )}
+            </div>
+
+            {lightbox && (
+                <div style={{
+                    position: "fixed", inset: 0, zIndex: 999,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    backgroundColor: "rgba(0,0,0,0.85)", cursor: "zoom-out",
+                }} onClick={() => setLightbox(null)}>
+                    <img src={lightbox} alt="" style={{ maxWidth: "90%", maxHeight: "90%", borderRadius: 8, boxShadow: "0 12px 40px rgba(0,0,0,0.6)" }}/>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ── Input style ───────────────────────────────────────────────────────────────
+
+const inputStyle: React.CSSProperties = {
+    width: "100%", padding: "8px 11px", fontSize: 13,
+    backgroundColor: "#0a0a0a", color: "#aaa",
+    border: "1px solid #222", borderRadius: 6, outline: "none",
+    fontFamily: "inherit", boxSizing: "border-box" as const,
+};
+
+/** Consistent field label — matches SectionLabel's letter-spaced-caps
+ *  language at a smaller weight, instead of the ad-hoc `fontSize:10,
+ *  color:"#3a3a3a"` labels the Manage forms used to repeat everywhere. */
+function FieldLabel({ children }: { children: React.ReactNode }) {
+    return (
+        <div style={{
+            fontSize: 10, fontWeight: 700, color: "#555",
+            letterSpacing: "0.05em", textTransform: "uppercase" as const,
+            marginBottom: 5,
+        }}>
+            {children}
+        </div>
+    );
+}

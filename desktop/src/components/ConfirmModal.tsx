@@ -52,7 +52,8 @@ export function ConfirmProvider({children}: { children: React.ReactNode }) {
                         {state.title && (
                             <p className="text-sm font-semibold" style={{color: "#f1f1f1"}}>{state.title}</p>
                         )}
-                        <p className="text-sm" style={{color: "#a0a0a0", lineHeight: 1.6}}>{state.message}</p>
+                        <p className="text-sm"
+                           style={{color: "#a0a0a0", lineHeight: 1.6, whiteSpace: "pre-line"}}>{state.message}</p>
                         <div className="flex gap-2 justify-end">
                             <button
                                 onClick={() => resolve(false)}

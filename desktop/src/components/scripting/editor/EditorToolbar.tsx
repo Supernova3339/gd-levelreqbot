@@ -3,6 +3,7 @@
 import {VarChipDropdown} from "./VarChipDropdown";
 import {SnippetDropdown} from "./SnippetDropdown";
 import {KeybindingsHelp} from "./KeybindingsHelp";
+import type {ScriptContext} from "../../../lib/scripting/proxy-api";
 
 interface Props {
     onInsert: (text: string) => void;
@@ -11,9 +12,18 @@ interface Props {
     onRunTest?: () => void;
     acEnabled?: boolean;
     onToggleAc?: () => void;
+    scriptCtx: ScriptContext;
 }
 
-export function EditorToolbar({onInsert, commandName, onFind, onRunTest, acEnabled = true, onToggleAc}: Props) {
+export function EditorToolbar({
+                                  onInsert,
+                                  commandName,
+                                  onFind,
+                                  onRunTest,
+                                  acEnabled = true,
+                                  onToggleAc,
+                                  scriptCtx
+                              }: Props) {
     const handleExport = async () => {
         const ta = document.querySelector<HTMLTextAreaElement>("[data-rhai-editor]");
         if (!ta) return;
@@ -38,14 +48,14 @@ export function EditorToolbar({onInsert, commandName, onFind, onRunTest, acEnabl
                  backgroundColor: "#0a0a0a",
              }}>
 
-            {/* ── Left: library chips ── */}
-            <VarChipDropdown onInsert={onInsert}/>
+            {/* ── Left: proxy + library chips ── */}
+            <VarChipDropdown onInsert={onInsert} scriptCtx={scriptCtx}/>
 
             <div style={{flex: 1, minWidth: 0}}/>
 
             {/* ── Right: actions ── */}
             <div style={{display: "flex", alignItems: "center", gap: 4, flexShrink: 0}}>
-                <SnippetDropdown onInsert={onInsert}/>
+                <SnippetDropdown onInsert={onInsert} scriptCtx={scriptCtx}/>
 
                 <Divider/>
 

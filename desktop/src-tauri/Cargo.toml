@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "cli"]
+resolver = "2"
+
 [package]
 name = "gdlqbot"
 version = "0.1.0"
@@ -38,7 +42,14 @@ sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "migrate
 twitch-irc = { version = "5", default-features = false, features = ["transport-tcp", "transport-tcp-native-tls", "refreshing-token-native-tls"] }
 
 # HTTP client (Twitch Helix API, YouTube API)
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# "stream" is needed by download_capped() in commands/marketplace.rs, which
+# streams package downloads so it can abort once a size cap is exceeded
+# instead of buffering the whole (possibly huge/malicious) response first.
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+
+# Twitch EventSub (channel-point redemptions) — WebSocket client
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -66,6 +77,29 @@ opener = "0.7"
 base64 = "0.22"
 async-recursion = "1.1.1"
 
+# GD account auth (GJP2 + encrypted storage)
+sha1    = "0.10"
+sha2    = "0.10"
+hex     = "0.4"
+aes-gcm = "0.10"
+
 # Scripting engine
 rhai = { version = "1", features = ["serde", "sync"] }
+
+# Module packaging (.gdmod = zip)
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Semantic version comparison
+semver = "1"
+
+# PNG encoding for preview screen stream
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.52"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 

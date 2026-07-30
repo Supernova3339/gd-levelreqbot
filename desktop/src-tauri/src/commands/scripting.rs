@@ -155,8 +155,9 @@ pub async fn test_script(
 
     let (queue_size, shell_enabled) = {
         let pool = queue_arc.db.read().await;
-        let size: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM queue")
-            .fetch_one(&*pool).await.unwrap_or(0);
+        let size: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM user_data WHERE collection = 'module:level-queue:viewer' OR collection = 'module:level-queue:subscriber'"
+        ).fetch_one(&*pool).await.unwrap_or(0);
         let shell = read_shell_enabled(&pool).await;
         (size, shell)
     };
@@ -165,6 +166,7 @@ pub async fn test_script(
         msg:             &mock_msg,
         args,
         queue:           queue_arc,
+        config:          None,
         command_name:    "test".to_string(),
         command_trigger: "!test".to_string(),
         command_counter: 0,
@@ -174,6 +176,13 @@ pub async fn test_script(
         queue_size,
         platform,
         shell_enabled,
+        module_id: None,
+        script_file: None,
+        twitch: None,
+        youtube: None,
+        event_chain: vec![],
+        redemption_id: None,
+        reward_id: None,
     };
 
     let result = run_script_full(&script, &ctx, app_handle).await;

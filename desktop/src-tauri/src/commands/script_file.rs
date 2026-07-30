@@ -59,3 +59,40 @@ pub async fn load_script_file(app: AppHandle) -> Result<Option<String>, String> 
 
     rx.await.map_err(|_| "Dialog was closed unexpectedly".to_string())
 }
+
+/// Open a native directory-picker dialog. Returns the selected path string, or null if cancelled.
+#[tauri::command]
+pub async fn pick_directory(app: AppHandle) -> Result<Option<String>, String> {
+    let (tx, rx) = oneshot::channel::<Option<String>>();
+
+    app.dialog()
+        .file()
+        .pick_folder(move |path| {
+            let dir = match path {
+                Some(FilePath::Path(p)) => p.to_string_lossy().into_owned().into(),
+                _ => None,
+            };
+            let _ = tx.send(dir);
+        });
+
+    rx.await.map_err(|_| "Dialog was closed unexpectedly".to_string())
+}
+
+/// Open a native file-open dialog for JSON module manifests.
+#[tauri::command]
+pub async fn load_module_file(app: AppHandle) -> Result<Option<String>, String> {
+    let (tx, rx) = oneshot::channel::<Option<String>>();
+
+    app.dialog()
+        .file()
+        .add_filter("Module Manifest", &["json"])
+        .pick_file(move |path| {
+            let content = match path {
+                Some(FilePath::Path(p)) => std::fs::read_to_string(p).ok(),
+                _ => None,
+            };
+            let _ = tx.send(content);
+        });
+
+    rx.await.map_err(|_| "Dialog was closed unexpectedly".to_string())
+}

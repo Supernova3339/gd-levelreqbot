@@ -1,5 +1,6 @@
 node_modules
 .idea
+tools/release/release.config.json
 subscribers.json
 viewers.json
 auth-config.json*
@@ -9,4 +10,14 @@ bot.config.json
 backups/*
 .claude
 external
+desktop/src-tauri/binaries/
+
+# Custom installer build artifacts
+tools/installer/target/
+tools/installer/dist/
+tools/installer/.stage/
+tools/installer/.stage-payload.tar.gz
+tools/installer/.stage-manifest.json
+tools/installer/ui/dist/
+tools/installer/gen/
 

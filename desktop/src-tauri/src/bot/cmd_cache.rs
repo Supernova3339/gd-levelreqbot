@@ -1,4 +1,4 @@
-use crate::commands::cmd_registry::BotCommand;
+use crate::commands::cmd_registry::{BotCommand, CMD_SELECT};
 use anyhow::Result;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -25,10 +25,7 @@ impl CommandCache {
 
     pub async fn reload(&self, pool: &SqlitePool) -> Result<()> {
         let cmds = sqlx::query_as::<_, BotCommand>(
-            "SELECT id, trigger, aliases, enabled, description, builtin_key, response,
-             required_badges, cooldown_seconds, user_cooldown_seconds, platform, counter, script,
-             script_mode
-             FROM bot_commands WHERE enabled != 0 ORDER BY id ASC",
+            &format!("{CMD_SELECT} WHERE enabled != 0 ORDER BY sort_order ASC, id ASC"),
         )
         .fetch_all(pool)
         .await?;
@@ -37,10 +34,13 @@ impl CommandCache {
     }
 
     /// Find a command whose trigger or alias matches the first word of `text`.
+    /// Commands with chat_enabled off don't participate at all — they exist
+    /// only for whatever listener(s) they're bound to below.
     pub async fn find(&self, text: &str) -> Option<BotCommand> {
         let first = text.split_whitespace().next().unwrap_or("");
         let commands = self.commands.read().await;
         for cmd in commands.iter() {
+            if cmd.chat_enabled == 0 { continue; }
             if cmd.trigger == first {
                 return Some(cmd.clone());
             }
@@ -51,6 +51,18 @@ impl CommandCache {
             }
         }
         None
+    }
+
+    /// Find an enabled command with a listener of `listener_type` (e.g.
+    /// "twitch_redemption", "event") whose config matches `config`
+    /// (case-insensitive). A command can have more than one listener; any
+    /// match is enough.
+    pub async fn find_by_listener(&self, listener_type: &str, config: &str) -> Option<BotCommand> {
+        let needle = config.to_lowercase();
+        let commands = self.commands.read().await;
+        commands.iter()
+            .find(|c| c.listener_defs().iter().any(|l| l.kind == listener_type && l.config.to_lowercase() == needle))
+            .cloned()
     }
 
     /// Returns `true` if the command is off global cooldown for this user.
@@ -85,6 +97,7 @@ impl CommandCache {
     }
 
     /// Remaining global cooldown in seconds, or 0 if ready.
+    #[allow(dead_code)]
     pub async fn global_cooldown_remaining(&self, cmd: &BotCommand) -> u64 {
         if cmd.cooldown_seconds <= 0 { return 0; }
         let global = self.global_cd.lock().await;

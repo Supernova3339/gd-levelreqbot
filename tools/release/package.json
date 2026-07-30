@@ -1,0 +1,15 @@
+{
+  "name": "gdlrb-release",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Release publisher CLI for GD Level Request Bot",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "release": "node release.mjs",
+    "release:list": "node release.mjs --list",
+    "release:dry": "node release.mjs --dry-run"
+  }
+}
