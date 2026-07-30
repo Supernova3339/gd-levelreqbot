@@ -15,7 +15,6 @@ desktop/src-tauri/binaries/
 
 # Custom installer build artifacts
 tools/installer/target/
-tools/installer/dist/
 tools/installer/.stage/
 tools/installer/.stage-payload.tar.gz
 tools/installer/.stage-manifest.json
