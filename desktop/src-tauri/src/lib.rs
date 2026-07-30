@@ -234,9 +234,18 @@ pub fn run() {
                 // some unrelated feature (e.g. GitHub login) needs it.
                 {
                     let mut rx = api_ready_tx.subscribe();
-                    match tokio::time::timeout(std::time::Duration::from_secs(5), rx.wait_for(|v| *v)).await {
-                        Ok(_)  => info!("API server confirmed up on port 24363"),
-                        Err(_) => error!("API server did not confirm startup within 5s — it may still come up late, or may be stuck (see any warnings above)"),
+                    // .is_ok() (not a match on the Ok(Ref) itself) drops the
+                    // borrowed Ref immediately — matching the timeout's
+                    // Result directly keeps that Ref borrowing `rx` alive
+                    // past the end of this block, which fails to borrow-check
+                    // since `rx` itself doesn't outlive the block.
+                    let confirmed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.wait_for(|v| *v))
+                        .await
+                        .is_ok();
+                    if confirmed {
+                        info!("API server confirmed up on port 24363");
+                    } else {
+                        error!("API server did not confirm startup within 5s — it may still come up late, or may be stuck (see any warnings above)");
                     }
                 }
 

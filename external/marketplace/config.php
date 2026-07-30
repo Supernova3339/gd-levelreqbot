@@ -6,7 +6,7 @@
 define('DB_HOST',    'localhost');
 define('DB_NAME',    'supersft_gdlrqb_marketplace');
 define('DB_USER',    'supersft_gdlrqb_marketplace');
-define('DB_PASS',    'REDACTED_DB_PASSWORD'); // TODO: fill in marketplace DB password
+define('DB_PASS',    getenv('MARKETPLACE_DB_PASS') ?: '');
 define('DB_CHARSET', 'utf8mb4');
 
 define('BASE_PATH', '/gdlvlreqbot/marketplace');
