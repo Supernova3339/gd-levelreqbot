@@ -1,0 +1,1 @@
+tools/installer/dist/** filter=lfs diff=lfs merge=lfs -text
