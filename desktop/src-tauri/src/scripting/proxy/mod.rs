@@ -1,4 +1,6 @@
+pub mod cache;
 pub mod chat;
+pub mod command;
 pub mod console;
 pub mod data;
 pub mod db;

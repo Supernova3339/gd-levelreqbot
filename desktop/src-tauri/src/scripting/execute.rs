@@ -18,8 +18,8 @@ use super::context::{ScriptCtx, ScriptOutput};
 use super::engine::get_engine;
 use super::stdlib::load_stdlib_from_db;
 use super::proxy::{
-    chat::ChatProxy, console::ConsoleProxy, queue::QueueProxy, user::UserProxy,
-    store::StoreProxy, data::DataProxy, db::DbProxy,
+    chat::ChatProxy, command::CommandProxy, console::ConsoleProxy, queue::QueueProxy, user::UserProxy,
+    store::StoreProxy, data::DataProxy, db::DbProxy, cache::CacheProxy,
     gd::GdProxy, rand::RandProxy, time::TimeProxy,
     event::EventProxy, web::WebProxy, io::IoProxy, shell::ShellProxy,
     module_store::ModuleStoreProxy, twitch::TwitchProxy, youtube::YouTubeProxy,
@@ -119,10 +119,14 @@ async fn run_script_inner(
         let is_module_script = ctx.module_id.is_some();
 
         scope.push("chat", ChatProxy {
-            output:   Arc::clone(&output_ref),
-            username: ctx.msg.username.clone(),
-            platform: ctx.platform.clone(),
-            twitch:   ctx.twitch.clone(),
+            output:     Arc::clone(&output_ref),
+            username:   ctx.msg.username.clone(),
+            platform:   ctx.platform.clone(),
+            twitch:     ctx.twitch.clone(),
+            youtube:    ctx.youtube.clone(),
+            module_id:  ctx.module_id.clone(),
+            queue:      ctx.queue.clone(),
+            app_handle: app_handle.clone(),
         });
         scope.push("console", ConsoleProxy {
             output:          Arc::clone(&console_ref),
@@ -141,7 +145,7 @@ async fn run_script_inner(
 
         // Module store: injected when running a module's script
         if let Some(ref mid) = ctx.module_id {
-            scope.push("ms", ModuleStoreProxy::new(mid.clone(), ctx.queue.clone()));
+            scope.push("ms", ModuleStoreProxy::new(mid.clone(), ctx.queue.clone(), app_handle.clone()));
         }
 
         // GD proxy: available to all scripts (including module panel data expressions)
@@ -152,14 +156,22 @@ async fn run_script_inner(
         scope.push("twitch", TwitchProxy { bot: ctx.twitch.clone() });
         scope.push("youtube", YouTubeProxy { bot: ctx.youtube.clone() });
 
-        // `web` is intentionally NOT given to module scripts (see stock-scripts
-        // policy: modules only ever get ms/chat/user/event/time/rand/io) — a
-        // marketplace module is third-party code, and unrestricted outbound
-        // HTTP from it is an SSRF/exfiltration vector (attacker-controlled
-        // module could read local network services or phone home with data
-        // pulled from `ms`/`chat`). Only the streamer's own trusted
-        // command/library scripts get it.
-        if !is_module_script {
+        // `web` is intentionally NOT given to module scripts by default (see
+        // stock-scripts policy: modules only ever get ms/chat/user/event/
+        // time/rand/io) — a marketplace module is third-party code, and
+        // unrestricted outbound HTTP from it is an SSRF/exfiltration vector
+        // (attacker-controlled module could read local network services or
+        // phone home with data pulled from `ms`/`chat`). A module can opt in
+        // by declaring `"permissions": ["web"]` in its manifest — surfaced to
+        // the user at install time, same idea as an app permission prompt —
+        // which is checked here per-module rather than unlocked globally.
+        let module_web_permission = match &ctx.module_id {
+            Some(mid) => super::proxy::queue::block_on(
+                super::proxy::module_store::module_has_permission(&ctx.queue, mid, "web")
+            ),
+            None => false,
+        };
+        if !is_module_script || module_web_permission {
             scope.push("web", WebProxy);
         }
 
@@ -179,6 +191,7 @@ async fn run_script_inner(
             scope.push("store", StoreProxy { queue: ctx.queue.clone() });
             scope.push("data",  DataProxy  { queue: ctx.queue.clone() });
             scope.push("db",    DbProxy    { queue: ctx.queue.clone() });
+            scope.push("cache", CacheProxy { queue: ctx.queue.clone() });
             scope.push("username",   ctx.msg.username.clone());
             scope.push("platform",   ctx.platform.clone());
             scope.push("sub_mode",   ctx.sub_mode);
@@ -195,7 +208,14 @@ async fn run_script_inner(
         }
 
         // ── Primitive context variables (always available) ─────────────────
+        // command_trigger is kept as a bare variable for compatibility with
+        // scripts written before the friendlier `command` proxy existed.
         scope.push("command_trigger", ctx.command_trigger.clone());
+        scope.push("command", CommandProxy {
+            name:    ctx.command_name.clone(),
+            trigger: ctx.command_trigger.clone(),
+            counter: ctx.command_counter,
+        });
 
         // Empty string (not unit) when this run wasn't triggered by a
         // redemption — keeps scripts simple (`if redemption_id != ""`)

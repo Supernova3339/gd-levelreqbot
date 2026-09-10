@@ -152,7 +152,17 @@ function PageContent({
                     </span>
                 </div>
             )}
-            <div style={{flex: 1, minHeight: 0, overflow: "hidden"}}>
+            {/* Must itself be a flex container (not just a flex ITEM) — `flex`/
+                `minHeight` on this div only take effect because PageContent's
+                root above is `display:flex`, but without `display:flex` here
+                too, the page's root layout node (a <Tabs>/<Stack fill="true">
+                setting flex:1/minHeight:0 on ITSELF) has no flex-container
+                parent to stretch within, so it collapses to content height
+                instead — and since this div's own overflow is "hidden", any
+                content taller than the pane gets silently clipped instead of
+                becoming scrollable. Missing this was the actual root cause of
+                "settings pages aren't scrollable," not anything module-side. */}
+            <div style={{flex: 1, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column"}}>
                 <NodeRenderer node={currentLayout}/>
             </div>
         </div>

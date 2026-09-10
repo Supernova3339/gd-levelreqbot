@@ -3,11 +3,7 @@ import type {LayoutNode, WidgetAction} from "../../../../../lib/types";
 import {useModulePageContext} from "../../context";
 import {useAction} from "../../hooks/useAction";
 import {resolveLucideIcon} from "../lucide";
-
-function MenuIcon({name, color}: { name: string; color: string }) {
-    const Ic = resolveLucideIcon(name);
-    return Ic ? <Ic size={12} color={color}/> : null;
-}
+import {MenuItemsList} from "./MenuItemsList";
 
 const TRIGGER: Record<string, { bg: string; color: string; border: string; hoverBg: string }> = {
     primary: {
@@ -195,110 +191,13 @@ export function ActionMenu({node}: { node: LayoutNode }) {
                         }
                     `}</style>
 
-                    {actions.length === 0 && (
-                        <div style={{padding: "7px 10px", fontSize: 11, color: "#3a3a3a"}}>
-                            No actions
-                        </div>
-                    )}
-
-                    {actions.map((action, i) => {
-                        if (action.type === "separator") {
-                            // Labeled separator → section header; plain → thin rule
-                            return action.label ? (
-                                <div key={i} role="separator" style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 6,
-                                    padding: "6px 10px 3px",
-                                    marginTop: i === 0 ? 0 : 2,
-                                }}>
-                                    <span style={{
-                                        fontSize: 10,
-                                        fontWeight: 600,
-                                        letterSpacing: "0.06em",
-                                        color: "#3a3a3a",
-                                        textTransform: "uppercase",
-                                        userSelect: "none"
-                                    }}>
-                                        {action.label}
-                                    </span>
-                                </div>
-                            ) : (
-                                <div key={i} role="separator" style={{
-                                    height: 1,
-                                    backgroundColor: "#1c1c1c",
-                                    margin: "3px 4px",
-                                }}/>
-                            );
-                        }
-
-                        const isDanger = action.style === "danger";
-                        const isSuccess = action.style === "success";
-                        const color = isDanger ? "#f87171" : isSuccess ? "#4ade80" : "#c4c4c4";
-                        const hoverBg = isDanger ? "#1f0909" : "#191919";
-
-                        return (
-                            <button
-                                key={i}
-                                ref={el => {
-                                    itemRefs.current[i] = el;
-                                }}
-                                role="menuitem"
-                                onClick={() => run(action)}
-                                onKeyDown={e => handleKey(e, i)}
-                                onMouseEnter={e => {
-                                    e.currentTarget.style.backgroundColor = hoverBg;
-                                    setFocusedIdx(i);
-                                }}
-                                onMouseLeave={e => {
-                                    e.currentTarget.style.backgroundColor = "transparent";
-                                }}
-                                onFocus={e => {
-                                    e.currentTarget.style.backgroundColor = hoverBg;
-                                }}
-                                onBlur={e => {
-                                    e.currentTarget.style.backgroundColor = "transparent";
-                                }}
-                                style={{
-                                    display: "flex",
-                                    alignItems: action.text ? "flex-start" : "center",
-                                    gap: 8,
-                                    width: "100%",
-                                    padding: "7px 10px",
-                                    fontSize: 12,
-                                    color,
-                                    cursor: "pointer",
-                                    borderRadius: 6,
-                                    border: "none",
-                                    backgroundColor: "transparent",
-                                    textAlign: "left",
-                                    transition: "background-color 0.08s",
-                                    userSelect: "none",
-                                    outline: "none",
-                                }}
-                            >
-                                {action.icon && (
-                                    <span style={{flexShrink: 0, marginTop: action.text ? 1 : 0}}>
-                                        <MenuIcon name={action.icon} color={color}/>
-                                    </span>
-                                )}
-                                <span style={{flex: 1, minWidth: 0}}>
-                                    <span style={{display: "block", lineHeight: 1.4}}>{action.label}</span>
-                                    {action.text && (
-                                        <span style={{
-                                            display: "block",
-                                            fontSize: 11,
-                                            color: "#484848",
-                                            lineHeight: 1.4,
-                                            marginTop: 1
-                                        }}>
-                                            {action.text}
-                                        </span>
-                                    )}
-                                </span>
-                            </button>
-                        );
-                    })}
+                    <MenuItemsList
+                        actions={actions}
+                        itemRefs={itemRefs}
+                        onRun={run}
+                        onFocusIdx={setFocusedIdx}
+                        onKeyDown={handleKey}
+                    />
                 </div>
             )}
         </div>

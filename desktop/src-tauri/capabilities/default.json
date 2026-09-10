@@ -4,13 +4,13 @@
   "description": "Capability for the main window and overlay windows",
   "windows": [
     "main",
-    "splashscreen",
     "level-copy",
     "debug-console"
   ],
   "permissions": [
     "core:default",
     "opener:default",
-    "updater:default"
+    "updater:default",
+    "autostart:default"
   ]
 }

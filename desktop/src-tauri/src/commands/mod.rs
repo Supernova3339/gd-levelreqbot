@@ -6,7 +6,6 @@ pub mod config;
 pub mod dev;
 pub mod gd;
 pub mod install_info;
-pub mod integrations;
 pub mod keybinds;
 pub mod marketplace;
 pub mod modules;

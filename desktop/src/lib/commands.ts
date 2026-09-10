@@ -401,6 +401,23 @@ export async function evalModulePanelData(
     try { return JSON.parse(json); } catch { return null; }
 }
 
+/** Same as evalModulePanelData, but rejects with the real Rhai error instead of
+ *  silently returning null on failure — see eval_module_panel_data_strict's doc comment. */
+export async function evalModulePanelDataStrict(
+    moduleId: string,
+    rhaiSnippet: string,
+    extraVars?: Record<string, unknown>,
+): Promise<unknown> {
+    const extraVarsJson = extraVars && Object.keys(extraVars).length > 0
+        ? JSON.stringify(extraVars) : undefined;
+    const json = await invoke<string>("eval_module_panel_data_strict", {moduleId, rhaiSnippet, extraVarsJson});
+    try {
+        return JSON.parse(json);
+    } catch {
+        return null;
+    }
+}
+
 /** Execute a named action script from a module and return any chat output lines. */
 export async function executeModuleAction(
     moduleId: string,
@@ -418,6 +435,11 @@ export async function loadModuleFile(): Promise<string | null> {
 /** Read a module UI page file (e.g. "ui/queue.gdui") from disk as raw XML string. */
 export async function readModulePage(moduleId: string, path: string): Promise<string> {
     return invoke<string>("read_module_page", {moduleId, path});
+}
+
+/** Read a module's raster resource (e.g. "resources/logo.png") as a data: URI. */
+export async function readModuleResourceDataUrl(moduleId: string, path: string): Promise<string> {
+    return invoke<string>("read_module_resource_data_url", {moduleId, path});
 }
 
 /** Return the Rhai source of whichever module owns the given builtin_key, or null if none. */

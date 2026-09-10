@@ -1,6 +1,6 @@
 # Project Index: gd-levelreqbot
 
-Generated: 2026-07-28 (updated from 2026-07-13)
+Generated: 2026-09-07 (updated from 2026-07-28)
 
 ## Overview
 
@@ -65,7 +65,8 @@ gd-levelreqbot/
     ├── marketplace/             # Marketplace catalog endpoints + schema
     ├── licensing/                # License key verification + GitHub-based auth
     ├── telemetry/                # Anonymous usage collection
-    └── updates/                  # Update manifest for tauri-plugin-updater
+    ├── updates/                  # Update manifest for tauri-plugin-updater
+    └── external.zip              # Packaged snapshot of the above for deployment
 ```
 
 ---
@@ -282,6 +283,10 @@ Replaces Tauri's built-in bundlers with a bespoke Tauri app:
 - Writes `install.json`, read by `desktop/src-tauri/src/commands/install_info.rs` to bridge install-time choices into
   the running app
 - Own `Cargo.toml`/`tauri.conf.json`, packaged independently from `desktop/`
+- Built for both **Windows** and **Linux** now (`tools/installer/dist/windows/`, `tools/installer/dist/linux/`), each
+  with a signed installer binary + `.sig` file
+- `tools/release/` — Node release packaging scripts (`release.mjs`, `release.config.json`) that drive building/signing
+  installer artifacts
 
 ---
 

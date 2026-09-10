@@ -4,6 +4,7 @@ import {useModulePageContext} from "../../context";
 import {readModulePage} from "../../../../../lib/commands";
 import {resolveLucideIcon} from "../lucide";
 import {sanitizeSvg} from "../../../../../lib/sanitizeSvg";
+import {useModuleResourceImage} from "../../hooks/useModuleResourceImage";
 
 // Built-in named SVG icons (same registry as Layout.tsx sidebar icons)
 const BUILTIN: Record<string, (s: number, c: string) => string> = {
@@ -69,17 +70,36 @@ function LocalIcon({moduleId, name, size, color}: { moduleId: string; name: stri
     );
 }
 
-export function Icon({node}: { node: LayoutNode }) {
+function ResourceIcon({moduleId, path, size}: { moduleId: string; path: string; size: number }) {
+    const url = useModuleResourceImage(moduleId, path);
+    if (!url) {
+        return (
+            <svg width={size} height={size} viewBox="0 0 18 18" fill="none">
+                <rect x="2" y="2" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" opacity="0.2"/>
+            </svg>
+        );
+    }
+    return <img src={url} alt="" width={size} height={size} style={{objectFit: "contain", display: "block"}}/>;
+}
+
+/** Namespace-dispatch shared by <Icon> and anything else (e.g. PlatformDot)
+ * that needs to resolve a bare "lucide:x" / "builtin:x" / "local:x" /
+ * "resource:x" string to an actual icon, without needing a full LayoutNode. */
+export function IconByName({name, size = 18, color = "currentColor"}: { name: string; size?: number; color?: string }) {
     const {moduleId} = useModulePageContext();
-
-    const name = node.icon_name ?? "";
-    const size = node.icon_size ?? 18;
-    const color = node.icon_color ?? "currentColor";
-
     const [ns, iconName] = name.includes(":") ? name.split(":", 2) : ["lucide", name];
 
     if (ns === "builtin") return <BuiltinIcon name={iconName} size={size} color={color}/>;
     if (ns === "local") return <LocalIcon moduleId={moduleId} name={iconName} size={size} color={color}/>;
+    // "resource:" — an arbitrary raster file under the module's own
+    // resources/ folder (e.g. a third-party logo), unlike "local:" which is
+    // specifically an SVG under resources/icons/.
+    if (ns === "resource") return <ResourceIcon moduleId={moduleId} path={iconName} size={size}/>;
     // Default: lucide
     return <LucideIcon name={iconName} size={size} color={color}/>;
+}
+
+export function Icon({node}: { node: LayoutNode }) {
+    return <IconByName name={node.icon_name ?? ""} size={node.icon_size ?? 18}
+                       color={node.icon_color ?? "currentColor"}/>;
 }

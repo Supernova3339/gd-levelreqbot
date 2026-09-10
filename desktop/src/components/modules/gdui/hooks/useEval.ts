@@ -59,19 +59,28 @@ export function useEval(
         run();
     }, [run]);
 
-    // Debounced run on streaming Tauri events — collapses rapid bursts into one call
+    // Debounced run on streaming Tauri events — collapses rapid bursts into one call.
+    // "module-data-updated" carries the emitting module's id as payload (see
+    // EventProxy::emit) — null/undefined means "unscoped, refresh regardless"
+    // (a non-module script's event.emit), otherwise only refetch if it's
+    // THIS page's module, so one module's frequent updates (a poll ticking
+    // every few seconds) don't also refetch every other open module's page.
     useEffect(() => {
         const debouncedRun = () => {
             if (debounceRef.current) clearTimeout(debounceRef.current);
             debounceRef.current = setTimeout(run, 60);
         };
-        const events = ["queue-updated", "module-data-updated"];
-        const unsubs = events.map(e => listen(e, debouncedRun));
+        const unsubs = [
+            listen("queue-updated", debouncedRun),
+            listen<string | null>("module-data-updated", e => {
+                if (e.payload == null || e.payload === moduleId) debouncedRun();
+            }),
+        ];
         return () => {
             if (debounceRef.current) clearTimeout(debounceRef.current);
             unsubs.forEach(p => p.then(f => f()));
         };
-    }, [run]);
+    }, [run, moduleId]);
 
     return {data, loading, error, refetch: run};
 }

@@ -6,6 +6,9 @@ type Size = "sm" | "md";
 interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
     variant?: Variant;
     size?: Size;
+    /** Shows a small spinner in place of the icon slot and forces disabled —
+     *  for async submit buttons instead of just dimming + swapping to "…". */
+    loading?: boolean;
 }
 
 const VARIANTS: Record<Variant, React.CSSProperties> = {
@@ -19,13 +22,24 @@ const SIZES: Record<Size, React.CSSProperties> = {
     md: {fontSize: 12, padding: "5px 12px", borderRadius: 5},
 };
 
-export function Button({variant = "outline", size = "md", style, children, ...rest}: Props) {
+function Spinner() {
+    return (
+        <span style={{
+            width: 10, height: 10, borderRadius: "50%",
+            border: "1.5px solid currentColor", borderTopColor: "transparent",
+            display: "inline-block", animation: "gdlq-btn-spin 0.6s linear infinite",
+        }}/>
+    );
+}
+
+export function Button({variant = "outline", size = "md", loading, disabled, style, children, ...rest}: Props) {
     return (
         <button
             {...rest}
+            disabled={disabled || loading}
             style={{
-                cursor: rest.disabled ? "default" : "pointer",
-                opacity: rest.disabled ? 0.45 : 1,
+                cursor: (disabled || loading) ? "default" : "pointer",
+                opacity: disabled ? 0.45 : 1,
                 fontWeight: 500,
                 display: "inline-flex",
                 alignItems: "center",
@@ -35,7 +49,9 @@ export function Button({variant = "outline", size = "md", style, children, ...re
                 ...SIZES[size],
                 ...style,
             }}>
+            {loading && <Spinner/>}
             {children}
+            <style>{`@keyframes gdlq-btn-spin { to { transform: rotate(360deg); } }`}</style>
         </button>
     );
 }

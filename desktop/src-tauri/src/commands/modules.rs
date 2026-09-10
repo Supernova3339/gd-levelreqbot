@@ -301,6 +301,42 @@ pub async fn eval_module_panel_data(
     queue: State<'_, Arc<QueueState>>,
     app_handle: AppHandle,
 ) -> Result<String, String> {
+    let (output, errors) = eval_module_panel_data_inner(module_id, rhai_snippet, extra_vars_json, queue, app_handle).await;
+    // Return null on any error (missing var, type error, etc.) rather than propagating —
+    // correct for things like Conditional showExpr, where a missing state var
+    // (e.g. `selected` before first selection) legitimately means "hidden", not "broken".
+    if !errors.is_empty() {
+        return Ok("null".into());
+    }
+    Ok(output.unwrap_or_else(|| "null".into()))
+}
+
+/// Same as `eval_module_panel_data` but surfaces the real Rhai error instead
+/// of collapsing it to "null" — used by Form's defaults-loading, where a
+/// silent "null" was undiagnosable (every retry looked identical, with no
+/// way to tell a genuine script bug from a transient timing issue).
+#[tauri::command]
+pub async fn eval_module_panel_data_strict(
+    module_id: String,
+    rhai_snippet: String,
+    extra_vars_json: Option<String>,
+    queue: State<'_, Arc<QueueState>>,
+    app_handle: AppHandle,
+) -> Result<String, String> {
+    let (output, errors) = eval_module_panel_data_inner(module_id, rhai_snippet, extra_vars_json, queue, app_handle).await;
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    Ok(output.unwrap_or_else(|| "null".into()))
+}
+
+async fn eval_module_panel_data_inner(
+    module_id: String,
+    rhai_snippet: String,
+    extra_vars_json: Option<String>,
+    queue: State<'_, Arc<QueueState>>,
+    app_handle: AppHandle,
+) -> (Option<String>, Vec<String>) {
     let msg = system_msg();
     let ctx = ScriptCtx {
         msg: &msg,
@@ -329,20 +365,12 @@ pub async fn eval_module_panel_data(
     // quotes. Normalise here so authors don't need &quot; escapes in their .gdui files.
     let rhai_snippet = rhai_snippet.replace('\'', "\"");
     let prefix = build_extra_vars_prefix(extra_vars_json.as_deref());
-    // run_script_eval suppresses bot-runtime-error events, so errors from missing state vars
-    // (e.g. `selected` before first selection) are silently swallowed and we return null.
     let wrapped = format!(
         "{}chat.say(io.encode_json({{ {} }}));",
         prefix, rhai_snippet
     );
     let result = run_script_eval(&wrapped, &ctx, app_handle).await;
-
-    // Return null on any error (missing var, type error, etc.) rather than propagating.
-    if !result.errors.is_empty() {
-        return Ok("null".into());
-    }
-
-    Ok(result.output.into_iter().next().unwrap_or_else(|| "null".into()))
+    (result.output.into_iter().next(), result.errors)
 }
 
 /// Build a Rhai prefix that injects a JSON object's keys as scope variables.
@@ -438,6 +466,36 @@ pub async fn read_module_page(
         .map_err(|e| format!("Could not read module page '{}': {}", path, e))
 }
 
+/// Read a module's raster resource (e.g. "resources/logo.png") as a `data:`
+/// URI — for a `<local:...>`/tab icon that needs an actual image rather than
+/// the sanitized-SVG text `read_module_page` returns. IPC-only (no HTTP
+/// namespacing needed, unlike the `/marketplace/.../resources/...` route
+/// used for things an external page like an overlay has to fetch by URL).
+#[tauri::command]
+pub async fn read_module_resource_data_url(
+    module_id: String,
+    path: String,
+    modules: State<'_, Arc<ModuleState>>,
+) -> Result<String, String> {
+    if path.contains("..") || path.starts_with('/') || path.starts_with('\\') {
+        return Err("Invalid path".to_string());
+    }
+    let file_path = modules.module_dir(&module_id).await.join(&path);
+    let bytes = std::fs::read(&file_path)
+        .map_err(|e| format!("Could not read module resource '{}': {}", path, e))?;
+    let mime = match file_path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    };
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{mime};base64,{encoded}"))
+}
+
 use tauri::Emitter;
 
 /// Evaluate a Rhai snippet in the debug console REPL.
@@ -491,6 +549,15 @@ pub async fn preflight_module(
     queue: State<'_, Arc<QueueState>>,
     app: AppHandle,
 ) -> Result<Vec<PreflightIssue>, String> {
+    if modules.get_module(&id).await.is_none() {
+        // Not a module — check whether it's an installed library-bundle
+        // package instead (e.g. "stdlib"), which is tracked entirely
+        // separately (kv_store, not the modules table) and has no
+        // commands/scripts/pages of its own to run the module checks below
+        // against.
+        let pool = modules.db.read().await;
+        return Ok(crate::commands::marketplace::preflight_package(&pool, &id).await);
+    }
     // Structural checks: file existence, page refs, library refs, command triggers
     let mut issues = modules.preflight(&id).await;
     // Runtime checks: execute bot command scripts, compile-check UI scripts

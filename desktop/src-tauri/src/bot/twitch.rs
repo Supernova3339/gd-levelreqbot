@@ -1,10 +1,11 @@
 #![allow(dead_code)]
 
 use crate::bot::dev::DevLogger;
-use crate::bot::eventsub::{self, RedemptionEvent};
+use crate::bot::eventsub::{self, RedemptionEvent, TwitchEventSubEvent};
 use crate::bot::platform::ChatPlatform;
 use crate::bot::twitch_api::{CustomReward, TwitchApiClient, TwitchUser};
 use crate::bot::ChatMessage;
+use crate::modules::ModuleState;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -42,8 +43,16 @@ pub struct TwitchBot {
     /// care which came first as long as they're listening by the time an
     /// event actually arrives.
     redemption_tx: broadcast::Sender<RedemptionEvent>,
+    /// Generic EventSub fan-out — every subscribed type, not just redemptions.
+    /// See `bot::eventsub`'s module doc for the one-session/one-subscription-
+    /// per-type design this backs.
+    twitch_event_tx: broadcast::Sender<TwitchEventSubEvent>,
     /// Signals the EventSub background task to stop. `true` = shut down.
     eventsub_shutdown: RwLock<Option<watch::Sender<bool>>>,
+    /// Needed at EventSub-connect time to compute which event types are
+    /// actually wanted (the union of every enabled module's `twitch_events`)
+    /// — see `eventsub::run`.
+    modules: Arc<ModuleState>,
     dev: Arc<DevLogger>,
     pub suppress_watermark: bool,
 }
@@ -54,17 +63,20 @@ impl TwitchBot {
         token: String,
         channel: String,
         message_tx: broadcast::Sender<ChatMessage>,
+        modules: Arc<ModuleState>,
         dev: Arc<DevLogger>,
         suppress_watermark: bool,
     ) -> Self {
         let (redemption_tx, _) = broadcast::channel(64);
+        let (twitch_event_tx, _) = broadcast::channel(128);
         Self {
             username, token, channel,
             client: RwLock::new(None),
             api: RwLock::new(None),
             redemption_tx,
+            twitch_event_tx,
             eventsub_shutdown: RwLock::new(None),
-            message_tx, dev, suppress_watermark,
+            message_tx, modules, dev, suppress_watermark,
         }
     }
 
@@ -78,6 +90,22 @@ impl TwitchBot {
     /// has actually established a session (see `resolve_helix`).
     pub fn subscribe_redemptions(&self) -> broadcast::Receiver<RedemptionEvent> {
         self.redemption_tx.subscribe()
+    }
+
+    /// Subscribe to every EventSub notification, regardless of type — the
+    /// generic fan-out `bot::twitch_events_handler` dispatches to modules
+    /// via their declared `twitch_events`. Same "safe before connect()"
+    /// property as `subscribe_redemptions`.
+    pub fn subscribe_twitch_events(&self) -> broadcast::Receiver<TwitchEventSubEvent> {
+        self.twitch_event_tx.subscribe()
+    }
+
+    /// Subscribe to raw incoming chat messages (both platforms — filter on
+    /// `ChatMessage::platform` if you only want one). Used by chat.poll()'s
+    /// fallback vote tally, which needs to watch chat independently of the
+    /// normal command dispatcher.
+    pub fn subscribe_chat(&self) -> broadcast::Receiver<ChatMessage> {
+        self.message_tx.subscribe()
     }
 
     /// List this app's manageable custom channel-point rewards.
@@ -166,6 +194,61 @@ impl TwitchBot {
         handle.client.send_announcement(&handle.broadcaster_id, &handle.moderator_id, message, color).await
     }
 
+    /// Send a chat message via Helix (not IRC) with Twitch's own 20-minute
+    /// pin applied. Requires `helix_ready()` and `moderator:manage:chat_messages`
+    /// — callers should treat any error here as "pin unavailable" and fall
+    /// back to a normal chat.say(), not surface it as a hard failure. Returns
+    /// the sent message's id, needed to unpin it later (see `unpin_message`).
+    pub async fn send_pinned_message(&self, message: &str) -> Result<String> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.send_chat_message(&handle.broadcaster_id, &handle.moderator_id, message, true).await
+    }
+
+    /// Unpin a specific message previously pinned via `send_pinned_message`.
+    /// Requires `helix_ready()` and `moderator:manage:chat_messages`.
+    pub async fn unpin_message(&self, message_id: &str) -> Result<()> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.unpin_message(&handle.broadcaster_id, &handle.moderator_id, message_id).await
+    }
+
+    /// Attempt to create a native Twitch poll. Requires `helix_ready()`, the
+    /// `channel:manage:polls` scope, AND that this connection's token belongs
+    /// to the broadcaster (not a separate bot account) — Twitch itself
+    /// enforces the last one. Callers should treat any error here as "not
+    /// eligible" and fall back to a chat-vote poll rather than surfacing it
+    /// as a hard failure.
+    pub async fn create_poll(&self, title: &str, options: &[String], duration_secs: i32) -> Result<String> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.create_poll(&handle.broadcaster_id, title, options, duration_secs).await
+    }
+
+    /// Fetch a native poll's current state (including vote counts) by id.
+    pub async fn get_poll(&self, poll_id: &str) -> Result<crate::bot::twitch_api::TwitchPoll> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.get_poll(&handle.broadcaster_id, poll_id).await
+    }
+
+    /// End a native poll early. Same broadcaster-token requirement as `create_poll`.
+    pub async fn end_poll(&self, poll_id: &str) -> Result<()> {
+        let guard = self.api.read().await;
+        let handle = guard.as_ref().context(
+            "Twitch Helix API not available — reconnect in Settings → Twitch to refresh scopes."
+        )?;
+        handle.client.end_poll(&handle.broadcaster_id, poll_id).await
+    }
+
     /// Resolve the Helix handle (token owner + broadcaster IDs) after IRC connects.
     /// Non-fatal on any failure — announcements etc. just stay unavailable.
     async fn resolve_helix(&self) {
@@ -194,20 +277,25 @@ impl TwitchBot {
 
         self.dev.log("Twitch Helix API ready (announcements, user lookup available)".to_string());
         let broadcaster_id = broadcaster.id.clone();
+        let moderator_id = self_user.id.clone();
         *self.api.write().await = Some(Arc::new(TwitchApiHandle {
             client:         api_client.clone(),
             broadcaster_id: broadcaster_id.clone(),
             moderator_id:   self_user.id,
         }));
 
-        // Channel-point redemptions: non-fatal to skip if the token predates the
-        // `channel:read:redemptions` scope — EventSub subscription itself will just
-        // fail and log, same degrade-gracefully approach as the rest of Helix here.
+        // EventSub: subscribes to redemptions (this app's own built-in
+        // feature) plus whatever the union of enabled modules' `twitch_events`
+        // wants — non-fatal to skip any given type if the token lacks the
+        // scope it needs, same degrade-gracefully approach as the rest of
+        // Helix here (see eventsub::run for the per-type handling).
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         *self.eventsub_shutdown.write().await = Some(shutdown_tx);
         let redemption_tx = self.redemption_tx.clone();
+        let twitch_event_tx = self.twitch_event_tx.clone();
+        let modules = Arc::clone(&self.modules);
         let dev = Arc::clone(&self.dev);
-        tokio::spawn(eventsub::run(api_client, broadcaster_id, redemption_tx, dev, shutdown_rx));
+        tokio::spawn(eventsub::run(api_client, broadcaster_id, moderator_id, redemption_tx, twitch_event_tx, modules, dev, shutdown_rx));
     }
 }
 

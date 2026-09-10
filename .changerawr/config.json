@@ -1,0 +1,20 @@
+{
+  "projectId": "cmqtz339d00sgnobsal9rt8l2",
+  "instanceUrl": "https://chr-dev.superdev.one",
+  "changelog": {
+    "filename": "CHANGELOG.md",
+    "includeAuthor": true,
+    "groupByType": true,
+    "autoGenerate": true
+  },
+  "sync": {
+    "autoSync": false,
+    "interval": 5,
+    "retryAttempts": 3
+  },
+  "ui": {
+    "showSpinners": true,
+    "colorOutput": true,
+    "verbose": false
+  }
+}

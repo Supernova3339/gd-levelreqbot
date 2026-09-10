@@ -359,7 +359,7 @@ fn validate_bundle(pkg_dir: &Path) -> (Value, Vec<String>) {
 
 fn bump_version(manifest_path: &Path, part: &BumpPart) -> Result<String> {
     let text = std::fs::read_to_string(manifest_path)?;
-    let mut m: Value = serde_json::from_str(&text)?;
+    let m: Value = serde_json::from_str(&text)?;
     let v = m["version"].as_str().context("No version field")?;
     let parts: Vec<u64> = v.split('.').map(|p| p.parse().unwrap_or(0)).collect();
     if parts.len() != 3 { bail!("Invalid semver: {v}"); }
@@ -369,16 +369,36 @@ fn bump_version(manifest_path: &Path, part: &BumpPart) -> Result<String> {
         BumpPart::Minor => format!("{}.{}.0", ma, mi + 1),
         BumpPart::Patch => format!("{}.{}.{}", ma, mi, pa + 1),
     };
-    m["version"] = Value::String(new_ver.clone());
-    std::fs::write(manifest_path, serde_json::to_string_pretty(&m)?)?;
+    // Surgical replace of just the "version" field's value, anchored to the
+    // key so a coincidentally-matching value elsewhere (e.g. min_app_version
+    // happening to equal the same string) can't be hit instead — preserves
+    // the file's existing formatting/key order rather than reserializing the
+    // whole document (which reformatted every manifest touched by --bump
+    // into alphabetical-key, no-trailing-newline form).
+    let re = regex::Regex::new(r#"("version"\s*:\s*)"[^"]+""#)?;
+    if !re.is_match(&text) { bail!("Could not locate a \"version\" field to replace"); }
+    let new_text = re.replacen(&text, 1, format!("${{1}}\"{new_ver}\"").as_str());
+    std::fs::write(manifest_path, new_text.as_bytes())?;
     Ok(new_ver)
 }
 
 // ── Packaging ─────────────────────────────────────────────────────────────────
 
+// The `zip` crate stamps every entry with `SystemTime::now()` by default
+// unless told otherwise — on top of build-meta.json's own timestamp (fixed
+// separately via source_git_info), this alone made two builds of identical,
+// unchanged source produce different bytes (and therefore different
+// checksums) any time they ran more than a second apart. Pinning every
+// entry to a fixed date makes the archive itself reproducible.
+fn fixed_zip_time() -> zip::DateTime {
+    zip::DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap_or_default()
+}
+
 fn add_dir_to_zip(zw: &mut ZipWriter<std::fs::File>, src: &Path, prefix: &str) -> Result<()> {
     if !src.is_dir() { return Ok(()); }
-    let opts: FileOptions<()> = FileOptions::default().compression_method(CompressionMethod::Deflated);
+    let opts: FileOptions<()> = FileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .last_modified_time(fixed_zip_time());
     for entry in walkdir::WalkDir::new(src).sort_by_file_name() {
         let entry = entry?;
         if !entry.file_type().is_file() { continue; }
@@ -391,7 +411,9 @@ fn add_dir_to_zip(zw: &mut ZipWriter<std::fs::File>, src: &Path, prefix: &str) -
 }
 
 fn write_to_zip(zw: &mut ZipWriter<std::fs::File>, path: &Path, arc: &str) -> Result<()> {
-    let opts: FileOptions<()> = FileOptions::default().compression_method(CompressionMethod::Deflated);
+    let opts: FileOptions<()> = FileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .last_modified_time(fixed_zip_time());
     zw.start_file(arc, opts)?;
     zw.write_all(&std::fs::read(path)?)?;
     Ok(())
@@ -419,7 +441,8 @@ fn write_hidden_manifest(zw: &mut ZipWriter<std::fs::File>, manifest_path: &Path
 fn write_hidden_manifest_at(zw: &mut ZipWriter<std::fs::File>, manifest_path: &Path, entry_name: &str) -> Result<()> {
     let manifest_bytes = std::fs::read(manifest_path)?;
     let mut opts: FileOptions<zip::write::ExtendedFileOptions> = FileOptions::default()
-        .compression_method(CompressionMethod::Stored);
+        .compression_method(CompressionMethod::Stored)
+        .last_modified_time(fixed_zip_time());
     // central_only=false — must land in the local file header too, since
     // that's what a reader iterating entries (not just parsing the central
     // directory) sees via ZipFile::extra_data().
@@ -430,11 +453,11 @@ fn write_hidden_manifest_at(zw: &mut ZipWriter<std::fs::File>, manifest_path: &P
     Ok(())
 }
 
-fn build_meta(manifest: &Value, pkg_type: &str) -> String {
-    let sha = git_sha_short();
+fn build_meta(pkg_dir: &Path, manifest: &Value, pkg_type: &str) -> String {
+    let (built_at, git_sha) = source_git_info(pkg_dir);
     serde_json::json!({
-        "built_at": chrono::Utc::now().to_rfc3339(),
-        "git_sha": sha,
+        "built_at": built_at,
+        "git_sha": git_sha,
         "package_id": manifest["id"],
         "version": manifest["version"],
         "type": pkg_type,
@@ -453,16 +476,19 @@ fn package_module(pkg_dir: &Path, manifest: &Value, dist: &Path) -> Result<PathB
     let out = out_dir(dist, id, ver)?.join(format!("{id}-{ver}.gdmod"));
     let file = std::fs::File::create(&out)?;
     let mut zw = ZipWriter::new(file);
-    let opts: FileOptions<()> = FileOptions::default().compression_method(CompressionMethod::Deflated);
+    let opts: FileOptions<()> = FileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .last_modified_time(fixed_zip_time());
 
     write_hidden_manifest(&mut zw, &pkg_dir.join("manifest.json"))?;
     add_dir_to_zip(&mut zw, &pkg_dir.join("scripts"),   "scripts")?;
     add_dir_to_zip(&mut zw, &pkg_dir.join("ui"),        "ui")?;
     add_dir_to_zip(&mut zw, &pkg_dir.join("resources"), "resources")?;
     add_dir_to_zip(&mut zw, &pkg_dir.join("libraries"), "libraries")?;
+    add_dir_to_zip(&mut zw, &pkg_dir.join("overlays"),  "overlays")?;
 
     zw.start_file("build-meta.json", opts)?;
-    zw.write_all(build_meta(manifest, "module").as_bytes())?;
+    zw.write_all(build_meta(pkg_dir, manifest, "module").as_bytes())?;
     zw.finish()?;
     Ok(out)
 }
@@ -477,11 +503,13 @@ fn package_bundle(pkg_dir: &Path, manifest: &Value, dist: &Path) -> Result<PathB
     let out = out_dir(dist, id, ver)?.join(format!("{id}-{ver}.gdpck"));
     let file = std::fs::File::create(&out)?;
     let mut zw = ZipWriter::new(file);
-    let opts: FileOptions<()> = FileOptions::default().compression_method(CompressionMethod::Deflated);
+    let opts: FileOptions<()> = FileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .last_modified_time(fixed_zip_time());
 
     write_to_zip(&mut zw, &pkg_dir.join("manifest.json"), "manifest.json")?;
     zw.start_file("build-meta.json", opts)?;
-    zw.write_all(build_meta(manifest, "package").as_bytes())?;
+    zw.write_all(build_meta(pkg_dir, manifest, "package").as_bytes())?;
 
     if let Some(libs) = manifest["libraries"].as_array() {
         for lib in libs {
@@ -512,15 +540,21 @@ fn package_bundle(pkg_dir: &Path, manifest: &Value, dist: &Path) -> Result<PathB
 fn add_library_to_zip(zw: &mut ZipWriter<std::fs::File>, lib_dir: &Path, lib_id: &str, prefix: &str) -> Result<()> {
     let lib_m: Value = serde_json::from_str(&std::fs::read_to_string(lib_dir.join("manifest.json"))?)?;
     write_to_zip(zw, &lib_dir.join("manifest.json"), &format!("{prefix}/{lib_id}/manifest.json"))?;
-    if let Some(entry) = lib_m["entry"].as_str() {
-        let ep = lib_dir.join(entry);
-        if ep.exists() { write_to_zip(zw, &ep, &format!("{prefix}/{lib_id}/{entry}"))?; }
+    let entry_name = lib_m["entry"].as_str().unwrap_or("");
+    if !entry_name.is_empty() {
+        let ep = lib_dir.join(entry_name);
+        if ep.exists() { write_to_zip(zw, &ep, &format!("{prefix}/{lib_id}/{entry_name}"))?; }
     }
+    // Any other .rhai files alongside the entry — excluding it, since it was
+    // just written above (writing it twice produces a "duplicate filename"
+    // zip error, not a silently-overwritten entry).
     for f in lib_dir.read_dir()?.flatten() {
         let p = f.path();
         if p.extension().and_then(|e| e.to_str()) == Some("rhai") {
             if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                write_to_zip(zw, &p, &format!("{prefix}/{lib_id}/{name}"))?;
+                if name != entry_name {
+                    write_to_zip(zw, &p, &format!("{prefix}/{lib_id}/{name}"))?;
+                }
             }
         }
     }
@@ -711,6 +745,40 @@ fn git_sha_short() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".into())
+}
+
+/// (built_at, git_sha) of the last commit that actually touched `pkg_dir` —
+/// NOT `chrono::Utc::now()`/repo HEAD, which change on every build/commit
+/// regardless of whether this package's own source did. Baking a live
+/// timestamp into build-meta.json (itself inside the checksummed .gdmod/
+/// .gdpck) meant rebuilding byte-identical, unchanged source — e.g. while
+/// releasing an unrelated package in the same repo — silently produced a
+/// different checksum every time. That's exactly what happened to the
+/// `stdlib` package: its .gdpck got regenerated (with a fresh timestamp) as
+/// a side effect of an unrelated release, the regenerated binary was
+/// committed, but its sidecar dist manifest.json (holding the checksum)
+/// wasn't — leaving a checksum on GitHub that no longer matched the file it
+/// described. Scoping to the package's own last commit makes an unchanged
+/// package's output reproducible no matter how many times or in what
+/// context it gets rebuilt.
+fn source_git_info(pkg_dir: &Path) -> (String, String) {
+    let out = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%aI %h", "--", "."])
+        .current_dir(pkg_dir)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+    let trimmed = out.trim();
+    if let Some((ts, sha)) = trimmed.split_once(' ') {
+        if !ts.is_empty() && !sha.is_empty() {
+            return (ts.to_string(), sha.to_string());
+        }
+    }
+    // No commit history for this path yet (new/uncommitted package) — fall
+    // back to "now"/HEAD. Only non-deterministic until the package's first
+    // commit lands, same as the pre-fix behavior was for everyone always.
+    (chrono::Utc::now().to_rfc3339(), git_sha_short())
 }
 
 fn git_changed_since(root: &Path, tag: &str) -> HashSet<String> {

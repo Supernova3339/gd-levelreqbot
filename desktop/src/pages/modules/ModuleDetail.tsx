@@ -1198,6 +1198,14 @@ export function ModuleDetail({
         trigger: string;
         builtin_key?: string
     }> | undefined;
+    // Opt-in capabilities beyond the default module sandbox (see
+    // ModuleManifest::permissions on the Rust side) — currently only "web"
+    // (outbound HTTP) is recognized. Surfaced here so installing isn't the
+    // first time a user learns a module can make network requests.
+    const permissions = (entry.manifest as Record<string, unknown>)?.permissions as string[] | undefined;
+    const PERMISSION_LABELS: Record<string, string> = {
+        web: "Make network requests to external services",
+    };
     const screenshots = entry.resources?.filter(r => r.resource_type === "screenshot") ?? [];
     // Synthetic entry for a locally-installed module/library that isn't in the
     // catalog at all (see mergeWithInstalled in useMarketplace.ts) — it has no
@@ -1220,8 +1228,8 @@ export function ModuleDetail({
     // Verified packages still get community reviews — being curated doesn't
     // mean feedback stops mattering. What's hidden for verified packages is
     // the *report* action, further down.
-    const hasReviews = isPublished && !isLocalOnly;
-    const hasReleases = isPublished && !isLocalOnly;
+    const hasReviews = isPublished && !isLocalOnly && !entry.isLocalShadow;
+    const hasReleases = isPublished && !isLocalOnly && !entry.isLocalShadow;
 
     // Reset remove-confirm, manage mode, and the media viewer position when
     // the selected entry changes
@@ -1466,11 +1474,20 @@ export function ModuleDetail({
                     // gate here just needs to stop excluding pending for the
                     // people who are allowed to see it.
                     const canInstall = isPublished || (isPending && canManage);
+                    const confirmedInstall = () => {
+                        if (permissions && permissions.length > 0) {
+                            const lines = permissions.map(p => `- ${PERMISSION_LABELS[p] ?? p}`).join("\n");
+                            if (!window.confirm(`${entry.name} requests extra permissions:\n\n${lines}\n\nInstall anyway?`)) {
+                                return;
+                            }
+                        }
+                        onInstall();
+                    };
                     const actionsContent = (
                         <>
                             {canInstall && !entry.installed && (
                                 <ActionBtn label="Install" variant="primary" loading={!!(busy && progress)}
-                                           onClick={onInstall}/>
+                                           onClick={confirmedInstall}/>
                             )}
                             {canInstall && entry.installed && entry.updateAvailable && (
                                 <ActionBtn label="Update" variant="warn" loading={!!(busy && progress)}
@@ -1511,7 +1528,7 @@ export function ModuleDetail({
                                     <TextLink onClick={() => setRemoveConfirm(true)}>Remove</TextLink>
                                 )
                             )}
-                            {account.username && !isLocalOnly && !entry.verified && (
+                            {account.username && !isLocalOnly && !entry.isLocalShadow && !entry.verified && (
                                 <TextLink onClick={() => setShowReport(true)}>Report</TextLink>
                             )}
                             {canManage && (
@@ -1695,6 +1712,22 @@ export function ModuleDetail({
                         )
                     );
 
+                    const permissionsBlock = permissions && permissions.length > 0 && (
+                        <div style={{maxWidth: readCap}}>
+                            <Divider tint={iconClr}/>
+                            <SectionLabel>Permissions</SectionLabel>
+                            <div>
+                                {permissions.map(p => (
+                                    <Row key={p} accent="#e0a13e">
+                                        <span style={{fontSize: 12, color: "#ccc", flex: 1, minWidth: 0}}>
+                                            {PERMISSION_LABELS[p] ?? p}
+                                        </span>
+                                    </Row>
+                                ))}
+                            </div>
+                        </div>
+                    );
+
                     const changelogBlock = entry.changelog && (
                         <div style={{maxWidth: readCap}}>
                             <Divider tint={iconClr}/>
@@ -1826,12 +1859,12 @@ export function ModuleDetail({
                     return isWide ? (
                         <>
                             {actionsAndFactsRow}{progressBlock}{devWatchBanner}{denialReason}
-                            {descriptionBlock}{screenshotsBlock}{changelogBlock}{commandsBlock}{healthBlock}{releasesBlock}{reviewsBlock}
+                            {descriptionBlock}{screenshotsBlock}{changelogBlock}{commandsBlock}{permissionsBlock}{healthBlock}{releasesBlock}{reviewsBlock}
                         </>
                     ) : (
                         <>
                             {actionsRow}{progressBlock}{devWatchBanner}{denialReason}
-                            {descriptionBlock}{factsBlock}{screenshotsBlock}{changelogBlock}{commandsBlock}{healthBlock}{releasesBlock}{reviewsBlock}
+                            {descriptionBlock}{factsBlock}{screenshotsBlock}{changelogBlock}{commandsBlock}{permissionsBlock}{healthBlock}{releasesBlock}{reviewsBlock}
                         </>
                     );
                 })()}

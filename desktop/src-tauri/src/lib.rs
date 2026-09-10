@@ -5,7 +5,6 @@ mod bot;
 mod commands;
 mod config;
 mod gd;
-mod integrations;
 mod modules;
 mod queue;
 mod scripting;
@@ -23,6 +22,37 @@ use bot::cmd_cache::CommandCache;
 use bot::dev::DevLogger;
 
 const MODULE_FILE_EXTS: &[&str] = &["gdmod", "gdpck", "gdlib"];
+
+// KEEP IN SYNC with `desktop/src-tauri/src/commands/install_info.rs`'s
+// APP_IDENTIFIER and `desktop/src-tauri/watchdog/src/main.rs`'s copy — all
+// three need to agree on where the app's data (and therefore its logs) live.
+const APP_IDENTIFIER: &str = "com.supersoft.gdlqb";
+
+/// `<data_dir>/<identifier>/logs` — computed independently of Tauri's own
+/// `app.path().app_data_dir()` because logging has to be set up before the
+/// `tauri::Builder` even exists. `dirs::data_dir()` resolves to the same
+/// root Tauri itself uses (roaming AppData on Windows, `~/.local/share` on
+/// Linux), so this lands in the same place.
+pub(crate) fn log_dir() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(APP_IDENTIFIER)
+        .join("logs")
+}
+
+/// Release builds run with `windows_subsystem = "windows"` (no console), so
+/// a Rust panic that would normally print to stderr otherwise vanishes
+/// without a trace. Logging it through `tracing` first sends it to the file
+/// sink installed in `run()` before the default hook's stderr write (which
+/// still happens, and is harmless — it just goes nowhere on a release build).
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        error!("PANIC: {info}\n{backtrace:?}");
+        default_hook(info);
+    }));
+}
 
 fn is_module_package_path(path: &std::path::Path) -> bool {
     path.extension()
@@ -98,12 +128,43 @@ pub fn run() {
         }
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "gdlqbot=info".into()),
-        )
-        .init();
+    // File sink lives under `log_dir()` regardless of build type — release
+    // builds have no console at all (`windows_subsystem = "windows"`), so
+    // this is the only place their logs ever land. Debug builds additionally
+    // keep the stdout layer for the normal terminal-attached dev workflow.
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let dir = log_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let file_appender = tracing_appender::rolling::daily(&dir, "app.log");
+        let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+        // Leaked deliberately: the non-blocking writer's background flush
+        // thread only runs while this guard is alive, and it needs to stay
+        // alive for the rest of the process — there's no natural owner for
+        // it before `tauri::Builder` exists below.
+        Box::leak(Box::new(guard));
+
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "gdlqbot=info".into());
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(file_writer)
+            .with_ansi(false);
+
+        #[cfg(debug_assertions)]
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(file_layer)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+        #[cfg(not(debug_assertions))]
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(file_layer)
+            .init();
+    }
+    install_panic_hook();
 
     // Shutdown channel: send `true` on app exit to stop the API server gracefully,
     // so port 24363 is released before the OS would time it out.
@@ -156,16 +217,21 @@ pub fn run() {
 
             // Show the window now, before the (potentially multi-second) backend
             // init below runs. The webview is a separate process — it's already
-            // loading index.html/React and will render the LoadingScreen spinner
-            // immediately regardless of Rust-side progress, so there's no reason
-            // to make the user stare at nothing while we wait for it. The window's
+            // loading index.html (whose inline CSS spinner paints immediately,
+            // before React itself has even loaded) — so there's no reason to
+            // make the user stare at nothing while we wait for it. The window's
             // `backgroundColor` (tauri.conf.json) avoids the WebView2 white-flash
             // that hiding-until-ready used to work around, so this is safe.
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
             }
 
-            tauri::async_runtime::block_on(async {
+            // Spawned rather than blocking this closure: `.setup()` blocking
+            // the main thread here used to also stall the `splash-status`
+            // events it emits below — queued behind the block, so the
+            // loading screen only ever received them all at once at the very
+            // end, not progressively as each step actually happened.
+            tauri::async_runtime::spawn(async move {
                 splash!("Initializing database…");
                 let pool = queue::db::init(&app_handle)
                     .await.expect("failed to initialize database");
@@ -363,9 +429,21 @@ pub fn run() {
                         }
                     }
                 });
-            });
 
-            info!("GD Level Request Bot started");
+                // Fresh launch (not a single-instance relaunch) opened via a
+                // file association — same handling as the single-instance
+                // argv path above. Needs `PendingOpenedFile` to already be
+                // managed (just above), so this stays inside the spawned
+                // task rather than running immediately after it's scheduled.
+                for arg in std::env::args().skip(1) {
+                    let path = std::path::PathBuf::from(&arg);
+                    if is_module_package_path(&path) {
+                        queue_opened_module_file(&app_handle, path);
+                    }
+                }
+
+                info!("GD Level Request Bot started");
+            });
 
             // ── Level-copy overlay ────────────────────────────────────────────────
             // Hidden by default; shown on `level-copied` events (clipboard auto-copy
@@ -404,15 +482,6 @@ pub fn run() {
                 });
             }
 
-            // Fresh launch (not a single-instance relaunch) opened via a file
-            // association — same handling as the single-instance argv path above.
-            for arg in std::env::args().skip(1) {
-                let path = std::path::PathBuf::from(&arg);
-                if is_module_package_path(&path) {
-                    queue_opened_module_file(&app_handle, path);
-                }
-            }
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -427,8 +496,10 @@ pub fn run() {
             commands::modules::install_module,
             commands::modules::uninstall_module,
             commands::modules::eval_module_panel_data,
+            commands::modules::eval_module_panel_data_strict,
             commands::modules::execute_module_action,
             commands::modules::read_module_page,
+            commands::modules::read_module_resource_data_url,
             commands::modules::read_module_script_for_builtin,
             commands::modules::preflight_module,
             commands::modules::eval_rhai_repl,
@@ -510,6 +581,7 @@ pub fn run() {
             commands::update::download_and_install_update,
             commands::update::cancel_update,
             // Window management
+            commands::window::open_log_dir,
             commands::window::dismiss_level_overlay,
             commands::window::open_debug_console,
             // Dev
@@ -529,6 +601,7 @@ pub fn run() {
             commands::install_info::get_install_preset,
             commands::install_info::take_pending_module_installs,
             commands::install_info::mark_preset_applied,
+            commands::install_info::take_autostart_request,
             // Keybinds
             commands::keybinds::get_keybinds,
             commands::keybinds::set_keybind,
@@ -539,12 +612,6 @@ pub fn run() {
             commands::gd::gd_login,
             commands::gd::gd_logout,
             commands::gd::get_gd_account,
-            // Integrations
-            commands::integrations::get_integrations,
-            commands::integrations::create_integration,
-            commands::integrations::update_integration,
-            commands::integrations::delete_integration,
-            commands::integrations::fetch_integration_value,
             // Script file I/O (native file dialog)
             commands::script_file::save_script_file,
             commands::script_file::save_library_file,

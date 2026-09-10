@@ -47,6 +47,14 @@ export function Options({state, opts, onChange}: OptionsProps) {
                             hint="App and uninstaller, in their own folder."
                         />
                     </Row>
+                    <Row>
+                        <Checkbox
+                            checked={opts.autostart}
+                            onChange={(v) => set({autostart: v})}
+                            label="Launch at login"
+                            hint="Starts automatically when you sign in — so you never have to remember."
+                        />
+                    </Row>
                     {m.file_associations.length > 0 && (
                         <Row>
                             <Checkbox

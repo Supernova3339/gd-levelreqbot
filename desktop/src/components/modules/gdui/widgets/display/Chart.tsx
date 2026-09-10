@@ -5,6 +5,17 @@ import {useEval} from "../../hooks/useEval";
 
 type Row = Record<string, unknown>;
 
+// Rounds a raw step up to a "nice" 1/2/5 × 10^n value instead of an arbitrary
+// integer (e.g. 3, 7, 13) — axis ticks read as round numbers a human would
+// actually pick, not whatever Math.ceil(max/4) happened to land on.
+function niceStep(raw: number): number {
+    if (raw <= 0) return 1;
+    const magnitude = Math.pow(10, Math.floor(Math.log10(raw)));
+    const normalized = raw / magnitude;
+    const rounded = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+    return rounded * magnitude;
+}
+
 // ── Bar chart ─────────────────────────────────────────────────────────────────
 
 function BarChart({
@@ -25,9 +36,10 @@ function BarChart({
     const barW = Math.max(2, Math.floor(chartW / rows.length) - 4);
 
     const yTicks = useMemo(() => {
-        const step = Math.ceil(maxVal / 4);
+        const step = niceStep(maxVal / 4);
         return Array.from({length: 5}, (_, i) => i * step);
     }, [maxVal]);
+    const niceMax = yTicks[yTicks.length - 1] || maxVal;
 
     return (
         <svg
@@ -36,7 +48,7 @@ function BarChart({
         >
             {/* Y-axis ticks */}
             {yTicks.map(tick => {
-                const y = PAD.top + chartH - (tick / maxVal) * chartH;
+                const y = PAD.top + chartH - (tick / niceMax) * chartH;
                 return (
                     <g key={tick}>
                         <line x1={PAD.left} y1={y} x2={PAD.left + chartW} y2={y}
@@ -52,15 +64,16 @@ function BarChart({
             {/* Bars */}
             {rows.map((row, i) => {
                 const val = Number(row[yKey] ?? 0);
-                const barH = (val / maxVal) * chartH;
+                const barH = (val / niceMax) * chartH;
                 const x = PAD.left + (i * (chartW / rows.length)) + (chartW / rows.length - barW) / 2;
                 const y = PAD.top + chartH - barH;
                 const label = String(row[xKey] ?? "");
 
+                const rx = Math.min(4, barW / 2, barH / 2);
                 return (
                     <g key={i}>
                         <rect x={x} y={y} width={barW} height={barH}
-                              fill={color} rx={2} opacity={0.85}/>
+                              fill={color} rx={rx} opacity={0.85}/>
                         <title>{label}: {val.toLocaleString()}</title>
                         {/* X label — truncated */}
                         <text

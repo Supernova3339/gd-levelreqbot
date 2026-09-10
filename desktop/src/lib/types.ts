@@ -160,6 +160,10 @@ export interface WidgetAction {
     text?: string;
     /** "separator" renders a horizontal divider instead of a clickable item */
     type?: "separator";
+    /** Row field to copy to the clipboard instead of dispatching action_key —
+     *  a pure frontend action for menu items like "Copy Title" that have no
+     *  script-side effect at all. Takes priority over action_key when set. */
+    copy_field?: string;
 }
 
 // ── Page / Layout system ──────────────────────────────────────────────────────
@@ -173,7 +177,7 @@ export interface FieldDef {
 export interface FormFieldDef {
     key: string;
     label: string;
-    type: "text" | "number" | "toggle" | "select" | "textarea";
+    type: "text" | "number" | "password" | "toggle" | "select" | "textarea";
     /** Rhai expression evaluated on mount to populate the initial field value. */
     default_expr?: string;
     options?: Array<{ value: string; label: string }>;
@@ -185,6 +189,13 @@ export interface FormFieldDef {
      *  one header). Lets a single <Form> visually organize many fields without
      *  splitting into multiple <Form>s (which breaks shared scroll sizing). */
     group?: string;
+    /** Key of another field in the same Form whose label row this field
+     *  should render alongside instead of taking its own row — generic
+     *  "attach a small control to a label" tooling, not tied to any
+     *  particular use case (units, sort direction, ...). Always renders as
+     *  a compact segmented toggle rather than a full dropdown, since that's
+     *  the whole point of putting it on a label row instead of its own. */
+    attach_to?: string;
 }
 
 // ── Module dependency / bundle types ─────────────────────────────────────────
@@ -300,7 +311,15 @@ export interface LayoutNode {
     row_secondary?: string;
     row_platform?: string;
     row_actions?: WidgetAction[];
+    /** Right-click menu for a row — <List><RowContextMenu><MenuItem .../></RowContextMenu></List>.
+     *  Separate from row_actions (always-visible inline buttons); this opens at
+     *  the cursor on right-click instead. */
+    row_context_menu?: WidgetAction[];
     empty_message?: string;
+    /** Rhai expression for the empty-state message instead of a static string
+     *  — e.g. so it can reference ms.command_trigger("...") and never go
+     *  stale when the user renames the command. Takes priority over empty_message. */
+    empty_message_expr?: string;
     /** Field whose integer value is displayed as "#N" before the row primary label */
     row_position_field?: string;
     /** Field whose value is rendered as a small badge chip on each row */
@@ -718,6 +737,15 @@ export interface ModulePageRef {
     file: string;
 }
 
+/** Static browser-source overlay page — served read-only at
+ *  `/overlay/{module_id}/{relative path under file's own directory}`. */
+export interface ModuleOverlayRef {
+    id: string;
+    label: string;
+    /** Relative path within the module directory, e.g. "overlay/results.html" */
+    file: string;
+}
+
 /** @deprecated Use ModulePageRef with .gdui files instead. Kept for type-checking legacy code. */
 export interface PageDef {
     id: string;
@@ -763,6 +791,8 @@ export interface ModuleManifest {
     icon: string;
     /** Sidebar pages defined as .gdui XML files in the module's ui/ folder. */
     pages?: ModulePageRef[];
+    /** Static browser-source overlay pages in the module's overlay/ folder. */
+    overlays?: ModuleOverlayRef[];
     commands: CommandDef[];
     /** Maps script key → relative path within the module directory. */
     scripts?: Record<string, string>;
@@ -774,6 +804,8 @@ export interface ModuleManifest {
     settings_page?: string;
     /** Initial sort applied when the module is installed. "alpha" | "register" (default = register). */
     default_sort?: "alpha" | "register";
+    /** Opt-in capabilities beyond the default module sandbox — currently only "web" is recognized. */
+    permissions?: string[];
 }
 
 // ── Licensing ────────────────────────────────────────────────────────────────

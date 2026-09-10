@@ -1,5 +1,14 @@
 // Small brand-mark badges used to differentiate which platform a queue
 // request came from — mirrors the icon assets in src/assets/platforms/.
+//
+// Beyond the two hardcoded chat-platform brands below, this also resolves
+// any other icon-namespace string (lucide:/builtin:/local:/resource:) the
+// same way the main <Icon> widget does — so a module can flag per-row
+// origin/provider info generically (e.g. polls showing its StrawPoll logo
+// on rows that used that provider) through the same `platform="field"`
+// binding, not just twitch/youtube.
+
+import {IconByName} from "./Icon";
 
 function TwitchIcon({size}: { size: number }) {
     return (
@@ -29,14 +38,14 @@ const PLATFORM_ICON: Record<string, (props: { size: number }) => React.JSX.Eleme
 };
 
 export function PlatformDot({platform, size = 12}: { platform?: string; size?: number }) {
-    const Icon = platform ? PLATFORM_ICON[platform.toLowerCase()] : undefined;
-    if (!Icon) return null;
+    if (!platform) return null;
+    const Icon = PLATFORM_ICON[platform.toLowerCase()];
     return (
         <span
             title={platform}
             style={{display: "inline-flex", flexShrink: 0, lineHeight: 0}}
         >
-            <Icon size={size}/>
+            {Icon ? <Icon size={size}/> : <IconByName name={platform} size={size}/>}
         </span>
     );
 }

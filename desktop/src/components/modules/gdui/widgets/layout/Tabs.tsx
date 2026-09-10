@@ -2,6 +2,7 @@ import {useEffect, useState} from "react";
 import type {LayoutNode} from "../../../../../lib/types";
 import {useModulePageContext} from "../../context";
 import {useEval} from "../../hooks/useEval";
+import {useModuleResourceImage} from "../../hooks/useModuleResourceImage";
 import {NodeRenderer} from "../NodeRenderer";
 import {resolveLucideIcon} from "../lucide";
 
@@ -33,9 +34,26 @@ function TabBadge({expr, pill}: { expr?: string; pill?: boolean }) {
 }
 
 function TabIcon({name, size = 12}: { name: string; size?: number }) {
-    const Comp = resolveLucideIcon(name);
+    const {moduleId} = useModulePageContext();
+    const [ns, iconName] = name.includes(":") ? name.split(":", 2) : ["lucide", name];
+
+    if (ns === "resource") {
+        return <TabResourceIcon moduleId={moduleId} path={iconName} size={size}/>;
+    }
+
+    const Comp = resolveLucideIcon(iconName);
     if (!Comp) return null;
     return <span style={{display: "inline-flex", alignItems: "center", opacity: 0.7}}><Comp size={size}/></span>;
+}
+
+function TabResourceIcon({moduleId, path, size}: { moduleId: string; path: string; size: number }) {
+    const url = useModuleResourceImage(moduleId, path);
+    if (!url) return null;
+    return (
+        <span style={{display: "inline-flex", alignItems: "center", opacity: 0.85}}>
+            <img src={url} alt="" width={size} height={size} style={{objectFit: "contain", display: "block"}}/>
+        </span>
+    );
 }
 
 type TabDef = {

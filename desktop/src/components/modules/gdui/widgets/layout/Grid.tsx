@@ -6,9 +6,11 @@ export function Grid({node}: { node: LayoutNode }) {
     const gap = node.grid_gap ?? 12;
     const minWidth = node.grid_min_width as number | undefined;
 
-    // minWidth triggers auto-fit: columns shrink/grow to fit the container
+    // minWidth triggers auto-fit: columns shrink/grow to fit the container.
+    // auto-fit (not auto-fill) so a short child count stretches to fill the
+    // row instead of leaving empty trailing tracks — see DetailCard's grid.
     const colsStr = minWidth
-        ? `repeat(auto-fill, minmax(${minWidth}px, 1fr))`
+        ? `repeat(auto-fit, minmax(${minWidth}px, 1fr))`
         : typeof cols === "number"
             ? `repeat(${cols}, 1fr)`
             : cols;

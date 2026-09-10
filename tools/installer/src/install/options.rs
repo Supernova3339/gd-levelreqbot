@@ -17,6 +17,13 @@ pub struct InstallOptions {
     pub enable_dev: bool,
     pub file_assoc: bool,
     pub launch_after: bool,
+    /// Registers the app to launch at login, applied once by the app itself
+    /// on first run (via `install.json`'s `autostart_requested`) so it goes
+    /// through the same `tauri-plugin-autostart` path the in-app Settings
+    /// toggle uses — see `seed::write_install_json`. Defaults to `false` when
+    /// missing (an install record from before this field existed) rather
+    /// than silently opting an existing install into autostart on update.
+    #[serde(default)] pub autostart: bool,
     /// Marketplace module ids accepted from the optional offers page.
     #[serde(default)] pub selected_offers: Vec<String>,
     /// Simulate only — never touch the filesystem, registry, or PATH.
@@ -34,6 +41,7 @@ impl InstallOptions {
             enable_dev: d.enable_dev,
             file_assoc: d.file_assoc && !manifest.file_associations.is_empty(),
             launch_after: d.launch_after,
+            autostart: d.launch_at_startup,
             selected_offers: manifest
                 .offers
                 .iter()
@@ -52,6 +60,7 @@ impl InstallOptions {
         if let Some(v) = args.enable_dev { self.enable_dev = v; }
         if let Some(v) = args.file_assoc { self.file_assoc = v; }
         if let Some(v) = args.launch { self.launch_after = v; }
+        if let Some(v) = args.autostart { self.autostart = v; }
         if let Some(ids) = &args.offers { self.selected_offers = ids.clone(); }
         if args.no_offers { self.selected_offers.clear(); }
         if args.dry_run { self.dry_run = true; }

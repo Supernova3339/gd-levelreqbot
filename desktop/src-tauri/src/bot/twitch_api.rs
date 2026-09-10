@@ -50,6 +50,28 @@ pub struct CustomReward {
     pub default_image: Option<RewardImage>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // full Helix response shape — id/title/status aren't needed by chat.poll() today
+pub struct PollChoice {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub votes: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct TwitchPoll {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub choices: Vec<PollChoice>,
+    /// "ACTIVE" | "COMPLETED" | "TERMINATED" | "ARCHIVED" | "MODERATED" | "INVALID"
+    #[serde(default)]
+    pub status: String,
+}
+
 #[derive(Clone)]
 pub struct TwitchApiClient {
     http:  Client,
@@ -114,6 +136,137 @@ impl TwitchApiClient {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
             anyhow::bail!("Twitch announcement failed (HTTP {status}): {text}");
+        }
+        Ok(())
+    }
+
+    /// Send a chat message via Helix rather than IRC, optionally pinning it.
+    /// Pinning requires `moderator:manage:chat_messages` (in addition to
+    /// whatever scope sending itself needs) and that `sender_id` is the
+    /// broadcaster or a moderator of `broadcaster_id`'s channel — a bot
+    /// running as neither will get a scope/permission error back, which the
+    /// caller should treat as "pin unavailable," not fatal. Twitch pins the
+    /// message for a fixed 20 minutes and only ever lets one message be
+    /// pinned at a time — pinning a second one while the first is still
+    /// active silently replaces it, per Twitch's own behavior, but explicit
+    /// unpinning (see `unpin_message`) is still worth doing for a "swap out"
+    /// since it also lets a caller decide NOT to leave a stale pin up if the
+    /// new one doesn't need pinning. If the pin itself fails, Twitch does not
+    /// send the message at all (per Twitch's own docs). Returns the sent
+    /// message's id, needed to unpin it later.
+    pub async fn send_chat_message(
+        &self,
+        broadcaster_id: &str,
+        sender_id:      &str,
+        message:        &str,
+        pin:            bool,
+    ) -> Result<String> {
+        let mut body = serde_json::json!({
+            "broadcaster_id": broadcaster_id,
+            "sender_id":      sender_id,
+            "message":        message,
+        });
+        if pin {
+            body["pin"] = serde_json::json!(true);
+        }
+        let resp = self.req(reqwest::Method::POST, "/chat/messages")
+            .json(&body)
+            .send().await.context("Helix chat/messages request failed")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Twitch send chat message failed (HTTP {status}): {text}");
+        }
+        #[derive(Deserialize)] struct SentMsg { message_id: String }
+        #[derive(Deserialize)] struct Resp { data: Vec<SentMsg> }
+        resp.json::<Resp>().await.context("Helix chat/messages response parse failed")?
+            .data.into_iter().next().map(|m| m.message_id).context("Helix returned no message_id after send")
+    }
+
+    /// Unpins a specific message by id (`DELETE /chat/pins`) — the caller
+    /// needs the message_id `send_chat_message` returned when it pinned that
+    /// message, since Twitch's endpoint targets a specific message rather
+    /// than "whatever's currently pinned." Requires
+    /// `moderator:manage:chat_messages`, same as pinning. Erroring here
+    /// (e.g. that message already expired/was already unpinned) should be
+    /// treated as non-fatal by the caller — the goal state (nothing stale
+    /// pinned) is already true either way.
+    pub async fn unpin_message(&self, broadcaster_id: &str, moderator_id: &str, message_id: &str) -> Result<()> {
+        let resp = self.req(reqwest::Method::DELETE, "/chat/pins")
+            .query(&[("broadcaster_id", broadcaster_id), ("moderator_id", moderator_id), ("message_id", message_id)])
+            .send().await.context("Helix chat/pins (unpin) request failed")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Twitch unpin message failed (HTTP {status}): {text}");
+        }
+        Ok(())
+    }
+
+    /// Create a native Twitch poll. Requires a user access token that includes
+    /// `channel:manage:polls` AND belongs to the broadcaster themselves — Twitch
+    /// rejects this call if the token owner isn't `broadcaster_id`, so a bot
+    /// running under a separate account (the common setup here) will always
+    /// fail this and should fall back to a chat-vote poll instead.
+    /// `choices`: 2-5 options, each <=25 chars. `duration_secs`: 15-1800.
+    /// Returns the new poll's id — the caller needs it to look up final
+    /// results once the poll closes (see `get_poll`); Twitch itself never
+    /// pushes a "poll ended" event, so that's the only way to find out.
+    pub async fn create_poll(&self, broadcaster_id: &str, title: &str, choices: &[String], duration_secs: i32) -> Result<String> {
+        let body = serde_json::json!({
+            "broadcaster_id": broadcaster_id,
+            "title": title,
+            "choices": choices.iter().map(|c| serde_json::json!({"title": c})).collect::<Vec<_>>(),
+            "duration": duration_secs,
+        });
+        let resp = self.req(reqwest::Method::POST, "/polls")
+            .json(&body)
+            .send().await.context("Helix polls (create) request failed")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Twitch create poll failed (HTTP {status}): {text}");
+        }
+        #[derive(Deserialize)] struct Resp { data: Vec<TwitchPoll> }
+        resp.json::<Resp>().await.context("Helix polls (create) response parse failed")?
+            .data.into_iter().next().map(|p| p.id).context("Helix returned no poll after create")
+    }
+
+    /// Fetch a poll's current state, including per-choice vote counts. Used
+    /// after `create_poll`'s duration has elapsed to read final results and
+    /// announce them — Twitch doesn't push a completion event.
+    pub async fn get_poll(&self, broadcaster_id: &str, poll_id: &str) -> Result<TwitchPoll> {
+        #[derive(Deserialize)] struct Resp { data: Vec<TwitchPoll> }
+        let resp = self.req(reqwest::Method::GET, "/polls")
+            .query(&[("broadcaster_id", broadcaster_id), ("id", poll_id)])
+            .send().await.context("Helix polls (get) request failed")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Twitch get poll failed (HTTP {status}): {text}");
+        }
+        resp.json::<Resp>().await.context("Helix polls (get) response parse failed")?
+            .data.into_iter().next().context("Helix returned no poll for that id")
+    }
+
+    /// End a native poll early (`status: "TERMINATED"`, discarding it rather
+    /// than "ARCHIVED" which keeps it visible as ended-early) — same
+    /// `channel:manage:polls` scope and broadcaster-token requirement as
+    /// `create_poll`, so this only ever works when the connected account IS
+    /// the broadcaster, same caveat as everywhere else native polls are used.
+    pub async fn end_poll(&self, broadcaster_id: &str, poll_id: &str) -> Result<()> {
+        let body = serde_json::json!({
+            "broadcaster_id": broadcaster_id,
+            "id": poll_id,
+            "status": "TERMINATED",
+        });
+        let resp = self.req(reqwest::Method::PATCH, "/polls")
+            .json(&body)
+            .send().await.context("Helix end poll request failed")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Twitch end poll failed (HTTP {status}): {text}");
         }
         Ok(())
     }
@@ -236,14 +389,16 @@ impl TwitchApiClient {
 
     /// Create an EventSub WebSocket subscription for the given event type against an
     /// already-established EventSub session. `condition` is the type-specific JSON body
-    /// (e.g. `{"broadcaster_user_id": "..."}`).
+    /// (e.g. `{"broadcaster_user_id": "..."}`). Returns the new subscription's id,
+    /// needed to delete it later (see `delete_eventsub_subscription`) once no
+    /// enabled module wants that type anymore.
     pub async fn create_eventsub_subscription(
         &self,
         event_type: &str,
         version: &str,
         condition: serde_json::Value,
         session_id: &str,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let body = serde_json::json!({
             "type": event_type,
             "version": version,
@@ -257,6 +412,25 @@ impl TwitchApiClient {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
             anyhow::bail!("Twitch EventSub subscription failed (HTTP {status}): {text}");
+        }
+        #[derive(Deserialize)] struct SubData { id: String }
+        #[derive(Deserialize)] struct Resp { data: Vec<SubData> }
+        resp.json::<Resp>().await.context("Helix eventsub subscription response parse failed")?
+            .data.into_iter().next().map(|s| s.id).context("Helix returned no subscription id after create")
+    }
+
+    /// Remove an EventSub subscription by id — called once no enabled module
+    /// wants that event type anymore, so a disabled/uninstalled module's
+    /// interest doesn't leave a subscription (and its Helix quota cost)
+    /// running forever.
+    pub async fn delete_eventsub_subscription(&self, id: &str) -> Result<()> {
+        let resp = self.req(reqwest::Method::DELETE, "/eventsub/subscriptions")
+            .query(&[("id", id)])
+            .send().await.context("Helix eventsub unsubscribe request failed")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Twitch EventSub unsubscribe failed (HTTP {status}): {text}");
         }
         Ok(())
     }

@@ -557,6 +557,11 @@ function parseList(el: Element): LayoutNode {
         .filter(e => e.tagName === "RowAction")
         .map(parseRowAction);
 
+    const contextMenuEl = elChildren(el).find(e => e.tagName === "RowContextMenu");
+    const contextMenuItems = contextMenuEl
+        ? elChildren(contextMenuEl).filter(e => e.tagName === "MenuItem").map(parseMenuItem)
+        : [];
+
     return {
         type: "List",
         row_id: attr(el, "rowId"),
@@ -569,8 +574,10 @@ function parseList(el: Element): LayoutNode {
         row_navigate_to: attr(el, "navigateTo"),
         selection_key: attr(el, "selectionKey"),
         empty_message: attr(el, "emptyMessage"),
+        empty_message_expr: attr(el, "emptyMessageExpr"),
         sections: sections.length ? sections : undefined,
         row_actions: rowActions.length ? rowActions : undefined,
+        row_context_menu: contextMenuItems.length ? contextMenuItems : undefined,
     };
 }
 
@@ -645,6 +652,19 @@ function parseRowAction(el: Element): WidgetAction {
     };
 }
 
+// <RowContextMenu><MenuItem label="…" key="…" [argField] [copyField] [style] [icon]/></RowContextMenu>
+// copyField takes priority over key when both are present — see WidgetAction.copy_field.
+function parseMenuItem(el: Element): WidgetAction {
+    return {
+        label: el.getAttribute("label") ?? "",
+        action_key: el.getAttribute("key") ?? "",
+        arg_field: attr(el, "argField"),
+        copy_field: attr(el, "copyField"),
+        style: (el.getAttribute("style") as WidgetAction["style"]) ?? "default",
+        icon: attr(el, "icon"),
+    };
+}
+
 function parseField(el: Element): FieldDef {
     return {
         key: el.getAttribute("key") ?? "",
@@ -681,6 +701,14 @@ function parseFormField(el: Element): FormFieldDef {
         max: numAttr(el, "max"),
         options: options.length ? options : undefined,
         group: attr(el, "group"),
+        // Generic "attach this field to another field's label row" tooling —
+        // not duration/unit-specific. Any Select can render as a small
+        // segmented toggle riding along a sibling field's label instead of
+        // taking its own full row, for whatever label-adjacent control a
+        // module wants (units, a sort direction, a mode switch, ...). The
+        // module still owns all the meaning/conversion math; this is purely
+        // presentational wiring.
+        attach_to: attr(el, "attachTo"),
     };
 }
 

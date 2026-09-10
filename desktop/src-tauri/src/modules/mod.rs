@@ -108,6 +108,22 @@ pub struct ModulePageRef {
     pub file: String,
 }
 
+/// Reference to a static browser-source overlay page bundled with a module —
+/// served read-only at `/overlay/{module_id}/{id}` (see `api::overlay_file`).
+/// Deliberately a STATIC file, not a Rhai-backed route: module code today
+/// only ever runs in response to something already-trusted (a chat message,
+/// a UI click); an HTTP route reachable by anyone who can hit the port is a
+/// different, inbound trust boundary this does not open. Live data reaches
+/// the page via the existing WS event bus (`event.emit`), not server-side
+/// logic per request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleOverlayRef {
+    pub id: String,
+    pub label: String,
+    /// Relative path within the module directory, e.g. "overlay/results.html"
+    pub file: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleManifest {
     pub id: String,
@@ -129,6 +145,10 @@ pub struct ModuleManifest {
     /// Sidebar page entries — each references a .gdui XML file in the module's `ui/` folder.
     #[serde(default)]
     pub pages: Vec<ModulePageRef>,
+    /// Static browser-source overlay pages — each served read-only at
+    /// `/overlay/{id}/{overlay.id}`. See `ModuleOverlayRef`.
+    #[serde(default)]
+    pub overlays: Vec<ModuleOverlayRef>,
     /// Commands registered by this module (trigger + script key + permissions).
     #[serde(default)]
     pub commands: Vec<CommandDef>,
@@ -163,6 +183,30 @@ pub struct ModuleManifest {
     /// "alpha" = alphabetical by trigger; "register" = manifest declaration order (default).
     #[serde(default)]
     pub default_sort: Option<String>,
+    /// Opt-in capabilities beyond the default module sandbox (ms/chat/user/
+    /// event/time/rand/io — see execute.rs's stock-scripts policy). Currently
+    /// only `"web"` is recognized (grants the `web` HTTP proxy). Declaring
+    /// one here is a claim the install/update UI should show the user before
+    /// they install, same idea as an app permission prompt — a marketplace
+    /// module is third-party code, so this is opt-in per module, not a
+    /// global unlock.
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    /// Twitch EventSub event types (e.g. "channel.follow") this module wants
+    /// delivered to `twitch_event_handler`. The app subscribes to the UNION
+    /// of every enabled module's list ONCE per distinct type — two modules
+    /// both wanting "channel.follow" still only cost one Helix subscription
+    /// and one EventSub session, see `bot::eventsub`. Purely a data want;
+    /// the module has no say over transport/session details.
+    #[serde(default)]
+    pub twitch_events: Vec<String>,
+    /// script_key (looked up in `scripts`) run for every subscribed event
+    /// this module declared interest in, via `twitch_events` above. Runs
+    /// with args `[event_type, payload_json]` — one handler for every type
+    /// the module asked for, same "the script itself decides what it cares
+    /// about" shape as `redemption_handler`, rather than one script per type.
+    #[serde(default)]
+    pub twitch_event_handler: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,6 +506,11 @@ impl ModuleState {
         let module_dir = self.module_dir(module_id).await;
         let pool       = self.db.read().await;
 
+        // Every bundled library — including stdlib's own — is scoped to its
+        // owning module (source_module = module_id), never NULL. Nothing
+        // gets ambient global/bare-method-call treatment; a script that
+        // wants stdlib's functions imports it explicitly like it would
+        // import anything else: `import "str" as str;` then `str::replace(...)`.
         for lib in &manifest.bundle.libraries {
             let src_path = module_dir.join(&lib.file);
             let code = match std::fs::read_to_string(&src_path) {
@@ -496,10 +545,19 @@ impl ModuleState {
                 .execute(&*pool).await
                 .map_err(|e| anyhow::anyhow!("Failed to install bundled library '{}': {e}", lib.name))?;
             } else {
+                // `is_stdlib = 0` alone would also block the stdlib PACKAGE
+                // from ever updating its own libraries once first installed —
+                // is_stdlib exists to stop a *different*, unrelated module
+                // from clobbering an official stdlib library of the same
+                // name (see libraries.rs's edit/delete guards), not to freeze
+                // stdlib's own libraries against its own reinstalls. Allow
+                // the update when either that protection doesn't apply, or
+                // this exact module is the one that owns the row already.
                 sqlx::query(
-                    "UPDATE libraries SET description = ?, code = ?, enabled = 1, source_module = ? WHERE name = ? AND is_stdlib = 0"
+                    "UPDATE libraries SET description = ?, code = ?, enabled = 1, source_module = ? \
+                     WHERE name = ? AND (is_stdlib = 0 OR source_module = ?)"
                 )
-                .bind(&desc).bind(&code).bind(module_id).bind(&lib.name)
+                .bind(&desc).bind(&code).bind(module_id).bind(&lib.name).bind(module_id)
                 .execute(&*pool).await
                 .map_err(|e| anyhow::anyhow!("Failed to update bundled library '{}': {e}", lib.name))?;
             }
@@ -558,6 +616,40 @@ impl ModuleState {
         for module in self.list_modules().await {
             if !module.enabled { continue; }
             let Some(script_key) = module.redemption_handler.as_ref() else { continue };
+            let Some(rel_path) = module.scripts.get(script_key) else { continue };
+            let script_path = self.module_dir(&module.id).await.join(rel_path);
+            if let Ok(src) = std::fs::read_to_string(&script_path) {
+                out.push((module.id.clone(), src, rel_path.clone()));
+            }
+        }
+        out
+    }
+
+    /// The union of every enabled module's `twitch_events` — what `bot::eventsub`
+    /// should actually be subscribed to right now. Two modules declaring the
+    /// same type collapse to one entry here, which is the whole point: one
+    /// Helix subscription serves every interested module, not one each.
+    pub async fn desired_twitch_event_types(&self) -> std::collections::HashSet<String> {
+        let mut set = std::collections::HashSet::new();
+        for module in self.list_modules().await {
+            if !module.enabled { continue; }
+            for ev in &module.twitch_events {
+                set.insert(ev.clone());
+            }
+        }
+        set
+    }
+
+    /// Every enabled module that wants `event_type` delivered, with its
+    /// `twitch_event_handler` script source pre-read from disk — the fan-out
+    /// side of the same one-subscription-many-listeners design as
+    /// `desired_twitch_event_types`. Returns (module_id, source, rel_path).
+    pub async fn find_twitch_event_handlers(&self, event_type: &str) -> Vec<(String, String, String)> {
+        let mut out = Vec::new();
+        for module in self.list_modules().await {
+            if !module.enabled { continue; }
+            if !module.twitch_events.iter().any(|e| e == event_type) { continue; }
+            let Some(script_key) = module.twitch_event_handler.as_ref() else { continue };
             let Some(rel_path) = module.scripts.get(script_key) else { continue };
             let script_path = self.module_dir(&module.id).await.join(rel_path);
             if let Ok(src) = std::fs::read_to_string(&script_path) {
@@ -684,6 +776,36 @@ impl ModuleState {
                             message: format!("Compile error: {e}"),
                         });
                     }
+                }
+            }
+
+            // A library name already owned by a DIFFERENT module/package
+            // would get silently reassigned to whichever one installs last —
+            // see install_bundled_libraries's upsert-by-name behavior. Flag
+            // it here rather than let two unrelated modules fight over the
+            // same `import "name"` (or, if it's a global one, the same bare
+            // global function names).
+            let pool = self.db.read().await;
+            let existing_owner: Option<Option<String>> = sqlx::query_scalar(
+                "SELECT source_module FROM libraries WHERE name = ?"
+            ).bind(&lib.name).fetch_optional(&*pool).await.unwrap_or(None);
+            drop(pool);
+            if let Some(owner) = existing_owner {
+                let owned_by_someone_else = match &owner {
+                    Some(other_id) => other_id != module_id,
+                    None => true, // NULL = a global stdlib library; never safe to reassign
+                };
+                if owned_by_someone_else {
+                    issues.push(PreflightIssue {
+                        severity: "error".into(),
+                        kind: "library".into(),
+                        file: Some(lib.file.clone()),
+                        message: format!(
+                            "Library name '{}' is already used by {} — pick a different name to avoid silently overwriting it",
+                            lib.name,
+                            owner.as_deref().unwrap_or("a global stdlib library")
+                        ),
+                    });
                 }
             }
         }

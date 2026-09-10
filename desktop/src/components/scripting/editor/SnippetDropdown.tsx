@@ -46,6 +46,17 @@ const SNIPPETS: Snippet[] = [
         label: "Platform check",
         body: `if user.platform == "twitch" {\n    // Twitch only\n} else if user.platform == "youtube" {\n    // YouTube only\n}`
     },
+    // Alias-specific behavior
+    {
+        category: "Alias",
+        label: "Different behavior per alias",
+        body: `if command.is_alias() {\n    chat.say(\`\${command.trigger()} — the bigger version!\`);\n} else {\n    chat.say(\`\${command.name()} — the normal version.\`);\n}`
+    },
+    {
+        category: "Alias",
+        label: "Branch on a specific alias",
+        body: `if command.is("!superbang") {\n    // extra behavior only for this alias\n} else {\n    // default behavior for the command's other triggers\n}`
+    },
     // Control
     {
         category: "Control",
@@ -111,15 +122,41 @@ const SNIPPETS: Snippet[] = [
     {
         category: "Web",
         label: "Web GET",
+        requires: "custom",
         body: `let res = web.get("https://api.example.com/data");\nif res != () {\n    chat.say(res);\n}`
     },
     {
         category: "Web",
         label: "Web GET JSON",
+        requires: "custom",
         body: `let data = web.get_json("https://api.example.com/json");\nif data != () {\n    chat.say(\`Got: \${data.message}\`);\n} else {\n    chat.say("Request failed.");\n}`
+    },
+    // Cache — replaces the old Integrations feature
+    {
+        category: "Cache",
+        label: "Cached fetch",
+        requires: "custom",
+        body: `let data = cache.fetch("my-data", "https://api.example.com/data", 300);\nif data != () {\n    chat.say(data);\n}`
+    },
+    {
+        category: "Cache",
+        label: "Cached fetch JSON",
+        requires: "custom",
+        body: `let data = cache.fetch_json("weather", "https://api.example.com/weather", 300);\nif data != () {\n    chat.say(\`It's \${data.temp}°\`);\n}`
     },
     // Events
     {category: "Events", label: "Emit event", body: `event.emit("my-event", user.name);\nchat.say("Event fired!");`},
+    // Polls
+    {
+        category: "Polls",
+        label: "Simple poll",
+        body: `chat.poll("Best update?", ["Polls", "Aliases", "Both!"]);`
+    },
+    {
+        category: "Polls",
+        label: "Poll with custom settings",
+        body: `chat.poll("Best update?", ["Polls", "Aliases", "Both!"], #{\n    duration: 30,\n    trigger: "!v",\n    announce: "{title} — type {trigger} <number>! Options: {options} ({seconds}s)",\n    results: "Winner: {winner} with {votes} votes! ({breakdown})",\n    no_votes: "No one voted for {title}.",\n});`
+    },
 ];
 
 interface Props {

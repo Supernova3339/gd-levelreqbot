@@ -7,6 +7,7 @@ use std::io::Read as IoRead;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
+use tracing::{info, warn};
 
 // ── Size limits (zip-bomb / OOM guards) ──────────────────────────────────────
 //
@@ -173,6 +174,25 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // â"€â"€ Version compatibility â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
+/// Logs exactly what got downloaded before checksum verification runs, so a
+/// mismatch is diagnosable from the log alone instead of just a hex string:
+/// byte count, whether it actually looks like a zip (`PK\x03\x04` magic —
+/// catches a CDN/edge serving an HTML error page or a truncated/redirected
+/// response instead of the real package), and a text preview when it doesn't.
+fn log_download(id: &str, url: &str, bytes: &[u8]) {
+    let looks_like_zip = bytes.starts_with(b"PK\x03\x04");
+    if looks_like_zip {
+        info!("download '{id}' from {url}: {} bytes, valid zip signature", bytes.len());
+    } else {
+        let preview_len = bytes.len().min(200);
+        let preview = String::from_utf8_lossy(&bytes[..preview_len]);
+        warn!(
+            "download '{id}' from {url}: {} bytes, NOT a zip (missing PK signature) — first {preview_len} bytes: {preview:?}",
+            bytes.len()
+        );
+    }
+}
+
 /// Verify SHA-256 checksum of downloaded bytes against the release's `checksum`
 /// field, when one was provided. A release without a checksum is not
 /// rejected — direct-URL releases predate this field being mandatory.
@@ -182,6 +202,7 @@ fn verify_checksum(bytes: &[u8], expected: &str, id: &str) -> Result<(), String>
     }
     use sha2::{Digest, Sha256};
     let actual = hex::encode(Sha256::digest(bytes));
+    info!("checksum '{id}': expected {expected}, computed {actual}, {} bytes hashed", bytes.len());
     if actual != expected {
         return Err(format!(
             "Checksum mismatch for '{id}': expected {expected}, got {actual}"
@@ -190,14 +211,19 @@ fn verify_checksum(bytes: &[u8], expected: &str, id: &str) -> Result<(), String>
     Ok(())
 }
 
-fn check_version_compat(min_app_version: &str) -> Result<(), String> {
-    let app = semver::Version::parse(APP_VERSION)
-        .map_err(|e| format!("Invalid app version: {e}"))?;
+/// Compares against `app_handle.package_info().version` — the version Tauri
+/// actually resolved (tauri.conf.json's `version`, when set, wins over
+/// Cargo.toml's) — not the `APP_VERSION`/`CARGO_PKG_VERSION` constant below,
+/// which is baked in from Cargo.toml at compile time and silently goes stale
+/// the moment the two files' version fields drift apart (as they had: this
+/// reported "you have v0.1.0" on an app whose About page said v0.1.1).
+fn check_version_compat(app_handle: &AppHandle, min_app_version: &str) -> Result<(), String> {
+    let app_version = app_handle.package_info().version.clone();
     let required = semver::Version::parse(min_app_version)
         .map_err(|_| format!("Module has invalid min_app_version: '{min_app_version}'"))?;
-    if app < required {
+    if app_version < required {
         return Err(format!(
-            "This module requires GDLQBot v{min_app_version} or later (you have v{APP_VERSION}). \
+            "This module requires GDLQBot v{min_app_version} or later (you have v{app_version}). \
              Please update the app first."
         ));
     }
@@ -601,7 +627,7 @@ pub async fn install_marketplace_module(
         .map_err(|e| format!("Marketplace response invalid: {e}"))?;
 
     // Version compatibility check
-    check_version_compat(&entry.min_app_version)?;
+    check_version_compat(&app_handle, &entry.min_app_version)?;
 
     // â"€â"€ Library install path â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     // ── GitHub source: resolve and install from raw repo files ────────────────
@@ -624,7 +650,13 @@ pub async fn install_marketplace_module(
                 .send()
                 .await
                 .map_err(|e| format!("Download failed: {e}"))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                emit_progress(&app_handle, &id, "error", Some("Download failed"));
+                return Err(format!("Download failed for '{id}': HTTP {status} from {}", entry.download_url));
+            }
             let bytes = download_capped(resp).await?;
+            log_download(&id, &entry.download_url, &bytes);
             verify_checksum(&bytes, &entry.checksum, &id)?;
 
             let manifest_val: serde_json::Value = {
@@ -705,7 +737,13 @@ pub async fn install_marketplace_module(
             .send()
             .await
             .map_err(|e| format!("Download failed: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            emit_progress(&app_handle, &id, "error", Some("Download failed"));
+            return Err(format!("Download failed for '{id}': HTTP {status} from {}", entry.download_url));
+        }
         let bytes = download_capped(resp).await?;
+        log_download(&id, &entry.download_url, &bytes);
         verify_checksum(&bytes, &entry.checksum, &id)?;
 
         // Read bundle manifest to get library list
@@ -744,7 +782,13 @@ pub async fn install_marketplace_module(
         .send()
         .await
         .map_err(|e| format!("Download failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        emit_progress(&app_handle, &id, "error", Some("Download failed"));
+        return Err(format!("Download failed for '{id}': HTTP {status} from {}", entry.download_url));
+    }
     let bytes = download_capped(resp).await?;
+    log_download(&id, &entry.download_url, &bytes);
     verify_checksum(&bytes, &entry.checksum, &id)?;
 
     emit_progress(&app_handle, &id, "installing", None);
@@ -834,8 +878,10 @@ async fn install_from_github(
              Expected: {version_base}manifest.json"
         ));
     }
-    let dist_manifest: serde_json::Value = manifest_resp
-        .json().await
+    let manifest_text = manifest_resp.text().await
+        .map_err(|e| format!("Failed to read dist manifest body: {e}"))?;
+    info!("dist manifest for '{id}' from {version_base}manifest.json: {manifest_text}");
+    let dist_manifest: serde_json::Value = serde_json::from_str(&manifest_text)
         .map_err(|e| format!("Dist manifest is not valid JSON: {e}"))?;
 
     let file = dist_manifest["file"].as_str()
@@ -867,10 +913,12 @@ async fn install_from_github(
         ));
     }
     let bytes = download_capped(artifact_resp).await?;
+    log_download(id, &format!("{version_base}{file}"), &bytes);
 
     // Verify SHA-256 checksum when the manifest provides one.
     if !expected_checksum.is_empty() {
         let actual = hex::encode(Sha256::digest(&bytes));
+        info!("checksum '{id}': expected {expected_checksum}, computed {actual}, {} bytes hashed", bytes.len());
         if actual != expected_checksum {
             let msg = format!("Checksum mismatch for '{id}': expected {expected_checksum}, got {actual}");
             emit_progress(app_handle, id, "error", Some("Checksum mismatch"));
@@ -957,6 +1005,65 @@ pub async fn get_installed_packages(
         v["id"] = serde_json::Value::String(id);
         Some(v)
     }).collect())
+}
+
+/// Preflight for an installed library-bundle package (e.g. "stdlib") — the
+/// counterpart to `ModuleState::preflight` for modules. A package has no
+/// commands/scripts/pages of its own to check, just a set of bundled
+/// libraries (tracked via `record_installed_package` above, actual source in
+/// the `libraries` table — see `install_gdpck_bytes_inner`), so this just
+/// compile-checks each one instead of reusing the module-shaped checks.
+pub async fn preflight_package(pool: &sqlx::SqlitePool, pkg_id: &str) -> Vec<crate::modules::PreflightIssue> {
+    use crate::modules::PreflightIssue;
+    use crate::scripting::engine::get_engine;
+
+    let key = format!("{PKG_KV_PREFIX}{pkg_id}");
+    let Some(value): Option<String> = sqlx::query_scalar("SELECT value FROM kv_store WHERE key = ?")
+        .bind(&key).fetch_optional(pool).await.ok().flatten()
+    else {
+        return vec![PreflightIssue {
+            severity: "error".into(), kind: "module".into(), file: None,
+            message: format!("Package '{pkg_id}' not found"),
+        }];
+    };
+    let Ok(record) = serde_json::from_str::<serde_json::Value>(&value) else {
+        return vec![PreflightIssue {
+            severity: "error".into(), kind: "module".into(), file: None,
+            message: format!("Package '{pkg_id}' install record is corrupt"),
+        }];
+    };
+    let lib_ids: Vec<String> = record.get("libs").and_then(|a| a.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    if lib_ids.is_empty() {
+        return vec![PreflightIssue {
+            severity: "warn".into(), kind: "library".into(), file: None,
+            message: "Package has no bundled libraries recorded".into(),
+        }];
+    }
+
+    let engine = get_engine();
+    let mut issues = Vec::new();
+    for lib_id in &lib_ids {
+        let code: Option<String> = sqlx::query_scalar("SELECT code FROM libraries WHERE name = ?")
+            .bind(lib_id).fetch_optional(pool).await.ok().flatten();
+        match code {
+            None => issues.push(PreflightIssue {
+                severity: "error".into(), kind: "library".into(), file: Some(lib_id.clone()),
+                message: format!("Library '{lib_id}' is part of this package but missing from the libraries table"),
+            }),
+            Some(src) => {
+                if let Err(e) = engine.compile(&src) {
+                    issues.push(PreflightIssue {
+                        severity: "error".into(), kind: "library".into(), file: Some(lib_id.clone()),
+                        message: format!("Compile error: {e}"),
+                    });
+                }
+            }
+        }
+    }
+    issues
 }
 
 /// Remove a previously installed package: deletes its constituent libraries
@@ -1283,7 +1390,7 @@ pub async fn install_local_package_inner(
 
     let pkg_type = root_manifest.get("package_type").and_then(|v| v.as_str()).unwrap_or("module");
     let min_ver = root_manifest.get("min_app_version").and_then(|v| v.as_str()).unwrap_or("0.0.1");
-    check_version_compat(min_ver)?;
+    check_version_compat(app_handle, min_ver)?;
 
     match pkg_type {
         "library" => {
@@ -1364,7 +1471,7 @@ pub async fn install_gdmod_bytes(
     let min_ver = manifest.get("min_app_version")
         .and_then(|v| v.as_str())
         .unwrap_or("0.0.1");
-    check_version_compat(min_ver)?;
+    check_version_compat(&app_handle, min_ver)?;
 
     let typed: ModuleManifest = serde_json::from_str(&manifest_json)
         .map_err(|e| format!("Invalid manifest.json: {e}"))?;
@@ -1402,11 +1509,73 @@ fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> std::io:
 
 // â"€â"€ Developer tools â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-/// Install a module from a local source directory (no zip required).
-/// Reads manifest.json + all sub-directories from the given path and copies
-/// them directly into the app's modules directory. Intended for module
-/// development workflows where you edit files in your source tree.
-/// Returns the installed module ID.
+/// Install (or refresh) a library-bundle package from a local source
+/// directory — the directory-based equivalent of `install_gdpck_bytes_inner`
+/// for the "package" manifest shape (`libraries: [...]`, no scripts/pages of
+/// its own). A package has no files copied anywhere on disk; each declared
+/// library's source is upserted straight into the `libraries` DB table —
+/// see that function's doc comment for why that alone is sufficient
+/// (`load_stdlib_from_db` re-reads it fresh on every script execution, no
+/// separate "recompile"/"register" step needed). Nested `packages: [...]`
+/// bundles aren't supported here (only top-level `libraries`) — dev-watching
+/// a nested bundle is a rare enough case not worth the extra complexity this
+/// pass; `install_gdpck_bytes_inner` still handles it for real installs.
+pub async fn install_package_from_dir_inner(
+    source_dir: &str,
+    manifest: &serde_json::Value,
+    modules: &Arc<ModuleState>,
+    app_handle: &AppHandle,
+) -> Result<String, String> {
+    let src = PathBuf::from(source_dir);
+    let pkg_id = manifest.get("id").and_then(|v| v.as_str())
+        .ok_or_else(|| "manifest.json missing 'id' field".to_string())?.to_string();
+    let version = manifest.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0").to_string();
+    let lib_ids: Vec<String> = manifest.get("libraries").and_then(|a| a.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    {
+        let pool = modules.db.read().await;
+        for lib_id in &lib_ids {
+            let lib_dir = src.join("libraries").join(lib_id);
+            let lib_manifest_json = std::fs::read_to_string(lib_dir.join("manifest.json"))
+                .map_err(|e| format!("Library '{lib_id}': failed to read manifest.json: {e}"))?;
+            let lib_manifest: serde_json::Value = serde_json::from_str(&lib_manifest_json)
+                .map_err(|e| format!("Library '{lib_id}': invalid manifest.json: {e}"))?;
+            let entry_file = lib_manifest.get("entry").and_then(|v| v.as_str())
+                .ok_or_else(|| format!("Library '{lib_id}' missing 'entry' field"))?.to_string();
+            let description = lib_manifest.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let source = std::fs::read_to_string(lib_dir.join(&entry_file))
+                .map_err(|e| format!("Library '{lib_id}': failed to read {entry_file}: {e}"))?;
+
+            let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM libraries WHERE name = ?")
+                .bind(lib_id).fetch_one(&*pool).await.unwrap_or(0);
+            if exists == 0 {
+                sqlx::query("INSERT INTO libraries (name, description, code, enabled) VALUES (?, ?, ?, 1)")
+                    .bind(lib_id).bind(&description).bind(&source)
+                    .execute(&*pool).await
+                    .map_err(|e| format!("Failed to install library '{lib_id}': {e}"))?;
+            } else {
+                sqlx::query("UPDATE libraries SET code = ?, description = ? WHERE name = ?")
+                    .bind(&source).bind(&description).bind(lib_id)
+                    .execute(&*pool).await
+                    .map_err(|e| format!("Failed to update library '{lib_id}': {e}"))?;
+            }
+        }
+        record_installed_package(&pool, &pkg_id, &version, &lib_ids).await;
+    }
+
+    app_handle.emit("library-updated", &pkg_id).ok();
+    Ok(pkg_id)
+}
+
+/// Install a module (or library-bundle package) from a local source
+/// directory (no zip required). Reads manifest.json and dispatches on its
+/// `package_type` — modules get their scripts/ui/resources copied into the
+/// app's modules directory; packages just get their libraries upserted into
+/// the DB (see `install_package_from_dir_inner`). Intended for development
+/// workflows where you edit files in your source tree. Returns the
+/// installed module/package ID.
 #[tauri::command]
 pub async fn install_module_from_dir(
     source_dir: String,
@@ -1433,10 +1602,21 @@ pub async fn install_module_from_dir_inner(
     let manifest_json = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("Failed to read manifest.json: {e}"))?;
 
+    // Packages (library bundles) are a completely different shape from
+    // modules — no commands/scripts/pages, just a `libraries` list — and
+    // install into a different place entirely (the `libraries` DB table via
+    // kv_store tracking, not the modules table). Peek at package_type before
+    // committing to the ModuleManifest shape below.
+    let raw: serde_json::Value = serde_json::from_str(&manifest_json)
+        .map_err(|e| format!("Invalid manifest.json: {e}"))?;
+    if raw.get("package_type").and_then(|v| v.as_str()) == Some("package") {
+        return install_package_from_dir_inner(source_dir, &raw, modules, app_handle).await;
+    }
+
     let manifest: ModuleManifest = serde_json::from_str(&manifest_json)
         .map_err(|e| format!("Invalid manifest.json: {e}"))?;
 
-    check_version_compat(&manifest.min_app_version)?;
+    check_version_compat(app_handle, &manifest.min_app_version)?;
 
     sync_module_dir_to_dest(&src, &modules.modules_dir.join("local").join("module").join(safe_path_component(&manifest.id)?))
         .map_err(|e| format!("Failed to sync module files: {e}"))?;
@@ -1480,6 +1660,17 @@ pub async fn hard_refresh_module(
     }
     let manifest_json = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("Failed to read manifest.json: {e}"))?;
+
+    // Packages have no on-disk install directory to wipe — their content is
+    // just DB rows in `libraries`, which install_package_from_dir_inner's
+    // UPDATE already fully overwrites. "Hard refresh" and "normal reinstall"
+    // are the same operation for a package.
+    let raw: serde_json::Value = serde_json::from_str(&manifest_json)
+        .map_err(|e| format!("Invalid manifest.json: {e}"))?;
+    if raw.get("package_type").and_then(|v| v.as_str()) == Some("package") {
+        return install_package_from_dir_inner(&source_dir, &raw, modules.inner(), &app_handle).await;
+    }
+
     let manifest: ModuleManifest = serde_json::from_str(&manifest_json)
         .map_err(|e| format!("Invalid manifest.json: {e}"))?;
 
@@ -1541,7 +1732,15 @@ pub async fn start_module_dev_watch(
         return Err(format!("Source directory not found: {source_dir}"));
     }
 
-    let dest_dir = modules.module_dir(&module_id).await;
+    // Packages (library bundles, e.g. "stdlib") have no on-disk install
+    // directory at all — their content lives purely as DB rows — so the
+    // watch loop needs an entirely different reload strategy than modules.
+    // Peeked once at watch-start; package_type doesn't change on a live watch.
+    let is_package = std::fs::read_to_string(src.join("manifest.json")).ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("package_type").and_then(|t| t.as_str()).map(String::from))
+        .as_deref() == Some("package");
+    let dest_dir = if is_package { PathBuf::new() } else { modules.module_dir(&module_id).await };
     let modules_arc = Arc::clone(modules.inner());
     let queue_arc   = Arc::clone(queue.inner());
     let handle = app_handle.clone();
@@ -1557,7 +1756,11 @@ pub async fn start_module_dev_watch(
     }
 
     let task_handle = tokio::spawn(async move {
-        dev_watch_loop(id, src_clone, dest_dir, modules_arc, queue_arc, handle).await;
+        if is_package {
+            package_dev_watch_loop(id, src_clone, modules_arc, handle).await;
+        } else {
+            dev_watch_loop(id, src_clone, dest_dir, modules_arc, queue_arc, handle).await;
+        }
     });
 
     {
@@ -1742,6 +1945,48 @@ async fn dev_watch_loop(
 
         // Re-run preflight after every hot-reload — only emits if there are errors
         super::modules::run_scripts_preflight(&module_id, &modules, &queue, handle.clone()).await;
+    }
+}
+
+/// Package equivalent of `dev_watch_loop` — packages have no on-disk install
+/// directory or scripts/pages to run preflight against, just a `libraries`
+/// list that gets upserted into the DB. Any change anywhere under `src`
+/// (manifest.json or a library's .rhai) just re-runs the full package
+/// install, which is cheap (a handful of DB upserts, no file I/O beyond
+/// reading the source itself).
+async fn package_dev_watch_loop(
+    pkg_id: String,
+    src: PathBuf,
+    modules: Arc<ModuleState>,
+    handle: AppHandle,
+) {
+    let mut mtimes: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
+    collect_mtimes(&src, &mut mtimes);
+
+    let reinstall = |handle: AppHandle, modules: Arc<ModuleState>, src: PathBuf, pkg_id: String| async move {
+        let Ok(json) = std::fs::read_to_string(src.join("manifest.json")) else { return };
+        let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&json) else { return };
+        match install_package_from_dir_inner(&src.to_string_lossy(), &manifest, &modules, &handle).await {
+            Ok(_) => {
+                handle.emit("module-dev-reloaded", serde_json::json!({
+                    "module_id": &pkg_id,
+                    "files": Vec::<String>::new(),
+                })).ok();
+            }
+            Err(e) => tracing::warn!("Package dev-watch reinstall failed for '{pkg_id}': {e}"),
+        }
+    };
+
+    // Initial: reinstall so the DB copy is up to date the moment the watch starts.
+    reinstall(handle.clone(), Arc::clone(&modules), src.clone(), pkg_id.clone()).await;
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let changed = detect_changes(&src, &mut mtimes);
+        if changed.is_empty() {
+            continue;
+        }
+        reinstall(handle.clone(), Arc::clone(&modules), src.clone(), pkg_id.clone()).await;
     }
 }
 

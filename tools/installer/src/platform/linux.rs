@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::install::{app_exe_path, cli_dir, InstallOptions};
+use crate::install::{app_exe_path, cli_dir, watchdog_exe_path, InstallOptions};
 use crate::manifest::{Manifest, ICON_PNG};
 
 pub fn registered_install_dir(manifest: &Manifest) -> Option<PathBuf> {
@@ -22,6 +22,13 @@ pub fn registered_install_dir(manifest: &Manifest) -> Option<PathBuf> {
 pub fn register(manifest: &Manifest, opts: &InstallOptions) -> Result<(), String> {
     let exe = app_exe_path(manifest, &opts.dir);
     let _ = Command::new("chmod").arg("+x").arg(&exe).output();
+    // .desktop entries and file associations launch through the watchdog
+    // (when this build shipped one) instead of the app directly, so a crash
+    // gets captured and alerted on.
+    let launch_target = watchdog_exe_path(manifest, &opts.dir).unwrap_or_else(|| exe.clone());
+    if launch_target != exe {
+        let _ = Command::new("chmod").arg("+x").arg(&launch_target).output();
+    }
 
     // Icon
     let icon_name = manifest.identifier.clone();
@@ -80,7 +87,7 @@ pub fn register(manifest: &Manifest, opts: &InstallOptions) -> Result<(), String
              Categories=Utility;\n\
              {mime_line}",
             name = manifest.product_name,
-            exe = exe.display(),
+            exe = launch_target.display(),
         );
         fs::write(apps.join(format!("{}.desktop", manifest.identifier)), &desktop)
             .map_err(|e| e.to_string())?;

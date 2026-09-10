@@ -68,6 +68,13 @@ fn build_engine() -> Engine {
     engine.set_max_string_size(32_000);
     engine.set_max_array_size(10_000);
     engine.set_max_map_size(10_000);
+    // Rhai's own default expression-depth limit is 32/16 (expr/function-expr)
+    // in debug builds vs 64/32 in release — profile-dependent by default,
+    // meaning a script with moderately nested control flow could compile in
+    // one build and fail with "Expression exceeds maximum complexity" in the
+    // other. Pinning this explicitly, like the limits above, makes script
+    // acceptance consistent regardless of how the app itself was built.
+    engine.set_max_expr_depths(128, 64);
 
     // Module resolver — allows `import "queue-core" as q;` in scripts.
     // The registry is populated lazily as modules install their bundled libraries.
@@ -77,9 +84,14 @@ fn build_engine() -> Engine {
     engine.register_fn("join", |arr: rhai::Array, sep: &str| -> String {
         arr.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(sep)
     });
+    // `replace` isn't natively registered — it comes from stdlib's str.rhai
+    // (installed with source_module = NULL, so it's globally available and
+    // method-call-resolvable — see modules/mod.rs's install_bundled_libraries
+    // and stdlib.rs's load_stdlib_from_db) rather than being hardcoded here.
 
     // Register all proxy types (no captured state — pure type registration)
     proxy::chat::register(&mut engine);
+    proxy::command::register(&mut engine);
     proxy::console::register(&mut engine);
     proxy::queue::register(&mut engine);
     proxy::user::register(&mut engine);
@@ -91,6 +103,7 @@ fn build_engine() -> Engine {
     proxy::event::register(&mut engine);
     proxy::data::register(&mut engine);
     proxy::web::register(&mut engine);
+    proxy::cache::register(&mut engine);
     proxy::io::register(&mut engine);
     proxy::shell::register(&mut engine);
     proxy::module_store::register(&mut engine);

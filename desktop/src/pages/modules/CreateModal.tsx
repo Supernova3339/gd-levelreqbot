@@ -21,22 +21,34 @@ export function CreateModal({username, initialType, onClose, onSuccess}: {
     const [release, setRelease] = useState({version: "1.0.0", download_url: "", checksum: "", changelog: ""});
     const [busy, setBusy] = useState(false);
     const [err, setErr] = useState<string | null>(null);
+    const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-    const setF = (key: keyof CreateModuleData) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+    const setF = (key: keyof CreateModuleData) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
         setForm(f => ({...f, [key]: e.target.value}));
-    const setR = (key: keyof typeof release) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+        setFieldErrors(errs => errs[key] ? {...errs, [key]: ""} : errs);
+    };
+    const setR = (key: keyof typeof release) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
         setRelease(r => ({...r, [key]: e.target.value}));
+        setFieldErrors(errs => errs[key] ? {...errs, [key]: ""} : errs);
+    };
 
-    const submit = async () => {
+    // All at once, not a sequential if-chain that only ever reveals the next
+    // problem after the previous one is fixed and resubmitted.
+    const validate = (): Record<string, string> => {
+        const errors: Record<string, string> = {};
         const required: (keyof CreateModuleData)[] = ["id", "name", "description"];
         for (const k of required) {
-            if (!String(form[k] ?? "").trim()) {
-                setErr(`"${k}" is required`);
-                return;
-            }
+            if (!String(form[k] ?? "").trim()) errors[k] = "Required";
         }
-        if (withRelease && !release.download_url.trim()) {
-            setErr('"download_url" is required for the release');
+        if (withRelease && !release.download_url.trim()) errors.download_url = "Required for the release";
+        return errors;
+    };
+
+    const submit = async () => {
+        const errors = validate();
+        setFieldErrors(errors);
+        if (Object.keys(errors).length > 0) {
+            setErr(null);
             return;
         }
         const token = await getLicenseToken();
@@ -75,8 +87,10 @@ export function CreateModal({username, initialType, onClose, onSuccess}: {
         >
             <MSep label="Identity"/>
             <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px"}}>
-                <MField label="Package ID" value={form.id} onChange={setF("id")} placeholder="my-mod"/>
-                <MField label="Display name" value={form.name} onChange={setF("name")} placeholder="My Module"/>
+                <MField label="Package ID" value={form.id} onChange={setF("id")} placeholder="my-mod"
+                        error={fieldErrors.id}/>
+                <MField label="Display name" value={form.name} onChange={setF("name")} placeholder="My Module"
+                        error={fieldErrors.name}/>
             </div>
             <MTypeToggle value={form.package_type} onChange={v => setForm(f => ({...f, package_type: v}))}/>
             <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px"}}>
@@ -87,7 +101,7 @@ export function CreateModal({username, initialType, onClose, onSuccess}: {
 
             <MSep label="Details"/>
             <MField label="Description" value={form.description} onChange={setF("description")} multi
-                    placeholder="What does this package do?"/>
+                    placeholder="What does this package do?" error={fieldErrors.description}/>
             <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px"}}>
                 <MField label="Tags" value={tagsRaw} onChange={e => setTagsRaw(e.target.value)}
                         placeholder="queue, fun, twitch" hint="comma-separated"/>
@@ -132,7 +146,7 @@ export function CreateModal({username, initialType, onClose, onSuccess}: {
                     <div style={{display: "grid", gridTemplateColumns: "1fr 2fr", gap: "0 12px"}}>
                         <MField label="Version" value={release.version} onChange={setR("version")} placeholder="1.0.0"/>
                         <MField label="Download URL" value={release.download_url} onChange={setR("download_url")}
-                                placeholder="https://…/package.gdmod"/>
+                                placeholder="https://…/package.gdmod" error={fieldErrors.download_url}/>
                     </div>
                     <MField label="SHA-256 checksum" value={release.checksum} onChange={setR("checksum")}
                             placeholder="optional" hint="optional"/>

@@ -1,10 +1,10 @@
 [workspace]
-members = [".", "cli"]
+members = [".", "cli", "watchdog"]
 resolver = "2"
 
 [package]
 name = "gdlqbot"
-version = "0.1.0"
+version = "0.1.1"
 description = "GD Level Request Bot — desktop app"
 authors = ["Supernova3339"]
 edition = "2021"
@@ -62,6 +62,7 @@ thiserror = "1"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 
 # Config
 dirs = "5"

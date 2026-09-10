@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "GD Level Request Bot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.supersoft.gdlqb",
   "build": {
-    "beforeDevCommand": "cargo build --manifest-path src-tauri/Cargo.toml -p gdlqbot-cli && npm run dev",
+    "beforeDevCommand": "cargo build --manifest-path src-tauri/Cargo.toml -p gdlqbot-cli -p gdlqb-watchdog && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "cargo build --release --manifest-path src-tauri/Cargo.toml -p gdlqbot-cli && npm run build",
+    "beforeBuildCommand": "cargo build --release --manifest-path src-tauri/Cargo.toml -p gdlqbot-cli -p gdlqb-watchdog && npm run build",
     "frontendDist": "../dist"
   },
   "app": {

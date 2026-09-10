@@ -7,6 +7,7 @@ pub mod platform;
 pub mod redemption_handler;
 pub mod twitch;
 pub mod twitch_api;
+pub mod twitch_events_handler;
 pub mod youtube;
 
 use crate::bot::twitch::TwitchBot;

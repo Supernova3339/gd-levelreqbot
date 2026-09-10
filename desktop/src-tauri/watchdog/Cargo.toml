@@ -1,0 +1,16 @@
+[package]
+name = "gdlqb-watchdog"
+version = "0.1.0"
+edition = "2021"
+description = "GD Level Request Bot — launch wrapper: captures logs and alerts on a crash"
+authors = ["Supernova3339"]
+
+[[bin]]
+name = "gdlqb-watchdog"
+path = "src/main.rs"
+
+[dependencies]
+dirs = "5"
+# Native message-box dialogs, cross-platform (Win32 on Windows, GTK3 on Linux
+# by default) — synchronous API, no async runtime of our own needed.
+rfd = "0.15"

@@ -18,6 +18,7 @@ pub struct Args {
     pub start_menu: Option<bool>,
     pub file_assoc: Option<bool>,
     pub launch: Option<bool>,
+    pub autostart: Option<bool>,
     pub preset_file: Option<PathBuf>,
     /// Simulate every step without touching the system (also forced on when
     /// the binary was built without a payload, i.e. installer development).
@@ -64,6 +65,8 @@ impl Args {
                 "--no-file-assoc" => a.file_assoc = Some(false),
                 "--launch" => a.launch = Some(true),
                 "--no-launch" => a.launch = Some(false),
+                "--autostart" => a.autostart = Some(true),
+                "--no-autostart" => a.autostart = Some(false),
                 "--preset" => a.preset_file = Some(PathBuf::from(value_of("--preset")?)),
                 "--dry-run" => a.dry_run = true,
                 "--offers" => {
@@ -111,6 +114,8 @@ Install options:
   --start-menu / --no-start-menu
   --file-assoc / --no-file-assoc
   --launch / --no-launch Launch the app when setup finishes
+  --autostart / --no-autostart
+                         Launch the app automatically when you log in
   --preset <file.json>   JSON file with app settings to pre-seed
   --offers <id,id,…>     Accept these optional marketplace module offers
   --no-offers            Decline all optional offers

@@ -37,6 +37,7 @@ export interface InstallOptions {
     enable_dev: boolean;
     file_assoc: boolean;
     launch_after: boolean;
+    autostart: boolean;
     selected_offers: string[];
     dry_run: boolean;
 }

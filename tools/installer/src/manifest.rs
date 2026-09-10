@@ -35,6 +35,7 @@ pub struct Defaults {
     #[serde(default)]         pub enable_dev: bool,
     #[serde(default = "yes")] pub file_assoc: bool,
     #[serde(default = "yes")] pub launch_after: bool,
+    #[serde(default = "yes")] pub launch_at_startup: bool,
 }
 
 impl Default for Defaults {
@@ -46,6 +47,7 @@ impl Default for Defaults {
             enable_dev: false,
             file_assoc: true,
             launch_after: true,
+            launch_at_startup: true,
         }
     }
 }
@@ -64,6 +66,10 @@ pub struct Manifest {
     pub exe_name: String,
     /// CLI executable file name inside the payload's `cli/` dir, if bundled.
     #[serde(default)] pub cli_name: Option<String>,
+    /// Watchdog/launch-wrapper executable file name, alongside `exe_name`
+    /// inside the payload's `app/` dir, if bundled. When present, shortcuts
+    /// and file associations launch this instead of `exe_name` directly.
+    #[serde(default)] pub watchdog_name: Option<String>,
     /// Full license / terms-of-service text shown by the installer.
     #[serde(default)] pub license: String,
     #[serde(default)] pub file_associations: Vec<FileAssoc>,
@@ -101,6 +107,7 @@ impl Manifest {
             homepage: "https://supersoft.us".into(),
             exe_name: if cfg!(windows) { "gdlqbot.exe" } else { "gdlqbot" }.into(),
             cli_name: Some(if cfg!(windows) { "gdlqbcli.exe" } else { "gdlqbcli" }.into()),
+            watchdog_name: Some(if cfg!(windows) { "gdlqb-watchdog.exe" } else { "gdlqb-watchdog" }.into()),
             license: include_str!("../assets/TERMS.md").into(),
             file_associations: vec![
                 FileAssoc {

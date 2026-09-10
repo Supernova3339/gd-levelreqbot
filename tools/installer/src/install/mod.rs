@@ -29,6 +29,13 @@ pub fn app_exe_path(manifest: &Manifest, dir: &Path) -> PathBuf {
     dir.join("app").join(&manifest.exe_name)
 }
 
+/// The watchdog/launch-wrapper exe, if this build shipped one. Shortcuts and
+/// file associations should launch this instead of `app_exe_path` directly
+/// when it's present — see `platform::register` and `launch_app`.
+pub fn watchdog_exe_path(manifest: &Manifest, dir: &Path) -> Option<PathBuf> {
+    manifest.watchdog_name.as_ref().map(|name| dir.join("app").join(name))
+}
+
 pub fn cli_dir(dir: &Path) -> PathBuf {
     dir.join("cli")
 }

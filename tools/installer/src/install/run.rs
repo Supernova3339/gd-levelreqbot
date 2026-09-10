@@ -167,7 +167,7 @@ pub fn launch_app(manifest: &Manifest, dir: &Path) {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let exe = super::app_exe_path(manifest, dir);
+        let exe = super::watchdog_exe_path(manifest, dir).unwrap_or_else(|| super::app_exe_path(manifest, dir));
         let _ = std::process::Command::new(exe).current_dir(dir).spawn();
     }
 }

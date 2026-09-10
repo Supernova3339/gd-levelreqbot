@@ -28,7 +28,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// console app; it already implies no visible console.
 const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
-use crate::install::{app_exe_path, cli_dir, uninstaller_name, InstallOptions};
+use crate::install::{app_exe_path, cli_dir, uninstaller_name, watchdog_exe_path, InstallOptions};
 use crate::manifest::Manifest;
 
 const UNINSTALL_ROOT: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
@@ -51,6 +51,13 @@ pub fn register(manifest: &Manifest, opts: &InstallOptions) -> Result<(), String
     let exe = app_exe_path(manifest, &opts.dir);
     let exe_str = exe.to_string_lossy().to_string();
     let uninst = opts.dir.join(uninstaller_name()).to_string_lossy().to_string();
+    // Shortcuts and file associations launch through the watchdog (when this
+    // build shipped one) instead of the app directly, so a crash gets
+    // captured and alerted on. `exe`/`exe_str` above stay pointed at the real
+    // app — they're also used for DisplayIcon/App Paths, which are about
+    // identifying the app, not launching it.
+    let launch_target = watchdog_exe_path(manifest, &opts.dir).unwrap_or_else(|| exe.clone());
+    let launch_target_str = launch_target.to_string_lossy().to_string();
 
     // Add/Remove Programs entry
     let (key, _) = hkcu
@@ -91,7 +98,7 @@ pub fn register(manifest: &Manifest, opts: &InstallOptions) -> Result<(), String
             let (icon, _) = prog.create_subkey("DefaultIcon").map_err(|e| e.to_string())?;
             icon.set_value("", &format!("{exe_str},0")).map_err(|e| e.to_string())?;
             let (cmd, _) = prog.create_subkey(r"shell\open\command").map_err(|e| e.to_string())?;
-            cmd.set_value("", &format!("\"{exe_str}\" \"%1\"")).map_err(|e| e.to_string())?;
+            cmd.set_value("", &format!("\"{launch_target_str}\" \"%1\"")).map_err(|e| e.to_string())?;
         }
     }
 
@@ -102,17 +109,18 @@ pub fn register(manifest: &Manifest, opts: &InstallOptions) -> Result<(), String
             std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
             create_shortcut(
                 &folder.join(format!("{}.lnk", manifest.product_name)),
-                &exe, "", &opts.dir,
+                &launch_target, "", &opts.dir, &exe,
             )?;
+            let uninst_path = opts.dir.join(uninstaller_name());
             create_shortcut(
                 &folder.join(format!("Uninstall {}.lnk", manifest.product_name)),
-                &opts.dir.join(uninstaller_name()), "--uninstall", &opts.dir,
+                &uninst_path, "--uninstall", &opts.dir, &uninst_path,
             )?;
         }
     }
     if opts.desktop_shortcut {
         if let Some(dir) = dirs::desktop_dir() {
-            create_shortcut(&dir.join(format!("{}.lnk", manifest.product_name)), &exe, "", &opts.dir)?;
+            create_shortcut(&dir.join(format!("{}.lnk", manifest.product_name)), &launch_target, "", &opts.dir, &exe)?;
         }
     }
 
@@ -281,18 +289,22 @@ fn start_menu_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join(r"Microsoft\Windows\Start Menu\Programs"))
 }
 
-fn create_shortcut(lnk: &Path, target: &Path, args: &str, workdir: &Path) -> Result<(), String> {
+/// `icon` is separate from `target` so a shortcut can launch through the
+/// watchdog wrapper while still showing the real app's icon rather than a
+/// generic exe icon (the watchdog binary doesn't carry its own).
+fn create_shortcut(lnk: &Path, target: &Path, args: &str, workdir: &Path, icon: &Path) -> Result<(), String> {
     let ps = format!(
         "$ws = New-Object -ComObject WScript.Shell; \
          $s = $ws.CreateShortcut('{lnk}'); \
          $s.TargetPath = '{target}'; \
          $s.Arguments = '{args}'; \
          $s.WorkingDirectory = '{workdir}'; \
-         $s.IconLocation = '{target},0'; \
+         $s.IconLocation = '{icon},0'; \
          $s.Save()",
         lnk = lnk.display(),
         target = target.display(),
         workdir = workdir.display(),
+        icon = icon.display(),
     );
     let out = Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &ps])

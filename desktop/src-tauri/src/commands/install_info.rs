@@ -145,6 +145,31 @@ pub fn take_pending_module_installs(app: tauri::AppHandle) -> Result<Vec<String>
     Ok(pending)
 }
 
+/// Whether the installer's "launch at login" checkbox was checked, consumed
+/// (and marked applied) so it's only ever acted on once — a later manual
+/// toggle-off in Settings survives a future update re-running the installer.
+/// The frontend acts on `true` by calling the same `@tauri-apps/plugin-autostart`
+/// `enable()` the Settings toggle uses, so there's no separate registration
+/// path to keep in sync with the plugin's own.
+#[tauri::command]
+pub fn take_autostart_request(app: tauri::AppHandle) -> Result<bool, String> {
+    let path = install_json_path(&app)?;
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => return Ok(false),
+    };
+    let mut v: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("Corrupt install.json: {e}"))?;
+    let already_applied = v.get("autostart_applied").and_then(|b| b.as_bool()).unwrap_or(false);
+    let requested = v.get("autostart_requested").and_then(|b| b.as_bool()).unwrap_or(false);
+    if already_applied {
+        return Ok(false);
+    }
+    v["autostart_applied"] = serde_json::Value::Bool(true);
+    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).map_err(|e| e.to_string())?;
+    Ok(requested)
+}
+
 /// Flag the preset as consumed so it is only applied once.
 #[tauri::command]
 pub fn mark_preset_applied(app: tauri::AppHandle) -> Result<(), String> {

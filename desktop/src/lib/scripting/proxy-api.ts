@@ -39,6 +39,11 @@ export interface ScriptContext {
 
 export const PROXY_META: Record<string, ProxyMeta> = {
     chat: {color: "#c792ea", availability: "always", summary: "Send messages to chat"},
+    command: {
+        color: "#fbbf24",
+        availability: "always",
+        summary: "How this run was invoked — trigger, alias, usage count"
+    },
     console: {color: "#a3a3a3", availability: "always", summary: "Log to the script debug console"},
     ms: {color: "#4ade80", availability: "module", summary: "Module-scoped key/value store + collections"},
     gd: {color: "#a78bfa", availability: "always", summary: "Geometry Dash level lookups"},
@@ -52,21 +57,26 @@ export const PROXY_META: Record<string, ProxyMeta> = {
     rand: {color: "#f78c6c", availability: "always", summary: "Random numbers and array helpers"},
     time: {color: "#f59e0b", availability: "always", summary: "Timestamps and formatting"},
     event: {color: "#34d399", availability: "always", summary: "Emit events to the frontend / WebSocket"},
-    web: {color: "#22d3ee", availability: "always", summary: "HTTP requests"},
+    web: {color: "#22d3ee", availability: "custom", summary: "HTTP requests (custom commands only)"},
     io: {color: "#eab308", availability: "always", summary: "JSON / CSV parsing utilities"},
     queue: {color: "#22c55e", availability: "custom", summary: "Legacy level-queue access (custom commands only)"},
     store: {color: "#6366f1", availability: "custom", summary: "Legacy global key/value store (custom commands only)"},
     data: {color: "#fb7185", availability: "custom", summary: "Legacy document collections (custom commands only)"},
     db: {color: "#f472b6", availability: "custom", summary: "Raw SQL exec (custom commands only)"},
+    cache: {
+        color: "#38bdf8",
+        availability: "custom",
+        summary: "TTL-cached HTTP fetches — replaces the old Integrations feature (custom commands only)"
+    },
     shell: {color: "#f87171", availability: "shell", summary: "Run local shell commands — enabled in Settings"},
 };
 
 // Ordered display list — module-relevant proxies first, then always-available,
 // then legacy custom-only ones, shell last (most dangerous / least common).
 export const PROXY_ORDER = [
-    "chat", "ms", "user", "gd", "twitch", "youtube",
+    "chat", "command", "ms", "user", "gd", "twitch", "youtube",
     "rand", "time", "event", "web", "io", "console",
-    "queue", "store", "data", "db", "shell",
+    "queue", "store", "data", "cache", "db", "shell",
 ];
 
 export const PROXY_NAMES = Object.keys(PROXY_META);
@@ -91,7 +101,7 @@ export function availableProxyNames(ctx: ScriptContext): string[] {
 
 // Context variables available at top level (not behind a proxy dot).
 export const CONTEXT_VARS_ALWAYS: CompletionItem[] = [
-    {label: "command_trigger", insert: "command_trigger", docs: 'e.g. "!request"'},
+    {label: "command_trigger", insert: "command_trigger", docs: 'e.g. "!request" — prefer the command proxy below'},
     {label: "args", insert: "args", docs: "Array of whitespace-split arguments"},
     {label: "args[0]", insert: "args[0]", docs: "First argument"},
     {label: "args.len()", insert: "args.len()", docs: "Number of arguments"},
@@ -127,6 +137,40 @@ export const PROXY_API: Record<string, CompletionItem[]> = {
         },
         {label: 'say_each(items)', insert: 'say_each([])', docs: "say() each element of an array", cursor: 9},
         {label: 'count()', insert: 'count()', docs: "Messages queued so far this run (i64)", cursor: -1},
+        {
+            label: 'poll(title, options)',
+            insert: 'poll("", [])',
+            docs: "2+ options. Native Twitch poll if eligible, else a chat-vote fallback (!vote <n>)",
+            cursor: 6
+        },
+        {
+            label: 'poll(title, options, settings)',
+            insert: 'poll("", [], #{})',
+            docs: "settings: duration, trigger, announce, results, no_votes",
+            cursor: 6
+        },
+    ],
+    command: [
+        {
+            label: 'trigger()',
+            insert: 'trigger()',
+            docs: 'Exact text used to invoke this run, e.g. "!superbang"',
+            cursor: -1
+        },
+        {label: 'name()', insert: 'name()', docs: 'Command\'s canonical/primary trigger, e.g. "!bang"', cursor: -1},
+        {
+            label: 'is(text)',
+            insert: 'is("")',
+            docs: 'True if trigger() == text — e.g. if command.is("!superbang") { ... }',
+            cursor: 4
+        },
+        {
+            label: 'is_alias()',
+            insert: 'is_alias()',
+            docs: "True when invoked via an alias, not the primary trigger",
+            cursor: -1
+        },
+        {label: 'counter()', insert: 'counter()', docs: "Total times this command has fired (i64)", cursor: -1},
     ],
     console: [
         {label: 'log(value)', insert: 'log("")', docs: "Log a value to the script console", cursor: 5},
@@ -343,6 +387,22 @@ export const PROXY_API: Record<string, CompletionItem[]> = {
         {label: 'count(col)', insert: 'count("")', docs: "Count documents in collection", cursor: 7},
         {label: 'delete(id)', insert: 'delete("")', docs: "Delete document by UUID", cursor: 8},
         {label: 'clear(col)', insert: 'clear("")', docs: "Delete all docs in collection", cursor: 7},
+    ],
+    cache: [
+        {label: 'get(key)', insert: 'get("")', docs: "Last stored/fetched value, () if none", cursor: 5},
+        {label: 'set(key, value)', insert: 'set("", "")', docs: "Manually store a value", cursor: 5},
+        {
+            label: 'fetch(key, url, ttlSeconds)',
+            insert: 'fetch("", "", 300)',
+            docs: "Cached HTTP GET — re-fetches only once ttlSeconds has passed",
+            cursor: 7
+        },
+        {
+            label: 'fetch_json(key, url, ttlSeconds)',
+            insert: 'fetch_json("", "", 300)',
+            docs: "Same, but JSON-parsed",
+            cursor: 12
+        },
     ],
     db: [
         {label: 'exec(sql)', insert: 'exec("")', docs: "Run non-parameterised SQL, returns rows affected", cursor: 6},

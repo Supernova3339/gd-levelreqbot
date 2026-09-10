@@ -1,9 +1,10 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {createPortal} from "react-dom";
-import {computePosition, flip, offset, shift} from "@floating-ui/dom";
+import {autoUpdate, computePosition, flip, offset, shift, size} from "@floating-ui/dom";
 import * as LucideIcons from "lucide-react";
 import {BUILTIN_CATEGORIES, BUILTIN_SVG, iconColor, IconRenderer} from "./icons";
-import {inp} from "./shared";
+import {MLabel} from "./shared";
+import {Input} from "../../components/ui/Input";
 
 function toKebab(pascal: string): string {
     return pascal.replace(/([A-Z])/g, (c, _m, i) => (i === 0 ? c.toLowerCase() : "-" + c.toLowerCase()));
@@ -42,7 +43,17 @@ function PickerCell({name, selected, color, onSelect}: {
     // can't collide on the same CSS property.
     const [focused, setFocused] = useState(false);
     const bg = selected ? `${color ?? "var(--color-accent)"}22` : hov ? "#1e1e1e" : "transparent";
-    const fg = selected ? (color ?? "var(--color-accent)") : hov ? "#888" : "#444";
+    // The built-in icons are duotone — several same-hue shapes layered at
+    // different opacities (15%/55%/90%-ish) — designed to read at a much
+    // larger size than this 36px cell. Flattening them all to one dim grey
+    // by default collapsed that layering into an indistinct grey blob (crown,
+    // trophy, fire especially). Tinting with the icon's own color even at
+    // rest keeps enough contrast between its layers to actually read; hover
+    // brightens further, matching the plain-grey treatment Lucide icons
+    // (color is undefined for those) already had.
+    const fg = selected ? (color ?? "var(--color-accent)")
+        : hov ? (color ?? "#888")
+            : color ? `${color}aa` : "#444";
     return (
         <button
             title={name}
@@ -61,7 +72,7 @@ function PickerCell({name, selected, color, onSelect}: {
                 transition: "background 0.1s, color 0.1s",
             }}
         >
-            <IconRenderer name={name} size={15}/>
+            <IconRenderer name={name} size={17}/>
         </button>
     );
 }
@@ -78,19 +89,36 @@ export function MIconPicker({value, onChange}: { value: string; onChange: (v: st
     const [open, setOpen] = useState(false);
     const [tab, setTab] = useState<"builtin" | "lucide">("builtin");
     const [search, setSearch] = useState("");
-    const [pos, setPos] = useState({top: -9999, left: -9999, width: 0});
+    const [pos, setPos] = useState({top: -9999, left: -9999, width: 300, maxHeight: 400});
     const btnRef = useRef<HTMLButtonElement>(null);
     const menuRef = useRef<HTMLDivElement>(null);
-    const cancelPos = useRef(false);
 
     const reposition = useCallback(() => {
         if (!btnRef.current || !menuRef.current) return;
-        cancelPos.current = false;
         computePosition(btnRef.current, menuRef.current, {
             placement: "bottom-start",
-            middleware: [offset(4), flip(), shift({padding: 8})],
+            middleware: [
+                offset(4),
+                flip(),
+                shift({padding: 8}),
+                // Without this, the panel's internal scroll areas used a fixed
+                // maxHeight regardless of where the trigger sits on screen —
+                // fine near the top of a tall window, cut off near the bottom
+                // or inside a shorter one. Clamp width/height to what's
+                // actually available instead of a guessed constant.
+                size({
+                    padding: 8,
+                    apply({availableWidth, availableHeight}) {
+                        setPos(p => ({
+                            ...p,
+                            width: Math.min(320, Math.max(260, availableWidth)),
+                            maxHeight: Math.max(180, availableHeight),
+                        }));
+                    },
+                }),
+            ],
         }).then(({x, y}) => {
-            if (!cancelPos.current) setPos({top: y, left: x, width: 296});
+            setPos(p => ({...p, top: y, left: x}));
         });
     }, []);
 
@@ -100,17 +128,12 @@ export function MIconPicker({value, onChange}: { value: string; onChange: (v: st
     }, [reposition]);
 
     useEffect(() => {
-        if (!open) {
-            cancelPos.current = true;
-            return;
-        }
-        window.addEventListener("resize", reposition);
-        window.addEventListener("scroll", reposition, true);
-        return () => {
-            cancelPos.current = true;
-            window.removeEventListener("resize", reposition);
-            window.removeEventListener("scroll", reposition, true);
-        };
+        if (!open || !btnRef.current || !menuRef.current) return;
+        // autoUpdate also tracks reference/floating size changes (e.g. the
+        // search results list growing/shrinking) that plain resize/scroll
+        // listeners don't — this menu's content height changes a lot as you
+        // type into the Lucide search.
+        return autoUpdate(btnRef.current, menuRef.current, reposition);
     }, [open, reposition]);
 
     useEffect(() => {
@@ -138,10 +161,11 @@ export function MIconPicker({value, onChange}: { value: string; onChange: (v: st
 
     const menu = open && createPortal(
         <div ref={setMenuRef} style={{
-            position: "fixed", top: pos.top, left: pos.left, width: pos.width, zIndex: 9999,
+            position: "fixed", top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight,
+            zIndex: 9999,
             backgroundColor: "#0d0d0d", border: "1px solid #222", borderRadius: 12,
             boxShadow: "0 16px 48px rgba(0,0,0,0.7)",
-            display: "flex", flexDirection: "column",
+            display: "flex", flexDirection: "column", overflow: "hidden",
         }}>
             <div style={{display: "flex", borderBottom: "1px solid #181818", flexShrink: 0}}>
                 {(["builtin", "lucide"] as const).map(t => (
@@ -158,7 +182,7 @@ export function MIconPicker({value, onChange}: { value: string; onChange: (v: st
             </div>
 
             {tab === "builtin" && (
-                <div style={{padding: "10px 10px 12px", overflowY: "auto", maxHeight: 320}}>
+                <div style={{padding: "10px 10px 12px", overflowY: "auto", flex: 1, minHeight: 0}}>
                     {BUILTIN_CATEGORIES.map(cat => (
                         <div key={cat.label} style={{marginBottom: 10}}>
                             <div style={{
@@ -190,16 +214,22 @@ export function MIconPicker({value, onChange}: { value: string; onChange: (v: st
             )}
 
             {tab === "lucide" && (
-                <div style={{padding: "10px 10px 12px", display: "flex", flexDirection: "column", gap: 8}}>
-                    <input
+                <div style={{
+                    padding: "10px 10px 12px", display: "flex", flexDirection: "column", gap: 8,
+                    flex: 1, minHeight: 0,
+                }}>
+                    <Input
                         autoFocus
                         aria-label="Search lucide icons"
                         value={search}
                         onChange={e => setSearch(e.target.value)}
                         placeholder="Search lucide icons…"
-                        style={{...inp, fontSize: 11, padding: "5px 8px"}}
+                        style={{fontSize: 11, padding: "5px 8px", flexShrink: 0}}
                     />
-                    <div style={{display: "flex", flexWrap: "wrap", gap: 3, maxHeight: 240, overflowY: "auto"}}>
+                    <div style={{
+                        display: "flex", flexWrap: "wrap", gap: 3, overflowY: "auto",
+                        flex: 1, minHeight: 0,
+                    }}>
                         {lucideResults.length === 0 ? (
                             <span style={{fontSize: 11, color: "#2e2e2e", padding: "8px 4px"}}>No results</span>
                         ) : lucideResults.map(name => (
@@ -225,12 +255,12 @@ export function MIconPicker({value, onChange}: { value: string; onChange: (v: st
                 flexShrink: 0
             }}>
                 <span style={{fontSize: 9, color: "#2a2a2a", flexShrink: 0, letterSpacing: "0.04em"}}>NAME</span>
-                <input
+                <Input
                     aria-label="Icon name"
                     value={value}
                     onChange={e => onChange(e.target.value)}
                     placeholder="any-lucide-name"
-                    style={{...inp, fontSize: 11, padding: "4px 8px", flex: 1}}
+                    style={{fontSize: 11, padding: "4px 8px", flex: 1}}
                 />
             </div>
         </div>,
@@ -239,14 +269,7 @@ export function MIconPicker({value, onChange}: { value: string; onChange: (v: st
 
     return (
         <div style={{marginBottom: 12}}>
-            <label style={{
-                fontSize: 10,
-                fontWeight: 600,
-                color: "#555",
-                letterSpacing: "0.04em",
-                display: "block",
-                marginBottom: 4
-            }}>Icon</label>
+            <MLabel>Icon</MLabel>
 
             <button ref={btnRef} onClick={() => setOpen(o => !o)} style={{
                 display: "flex", alignItems: "center", gap: 10, width: "100%",

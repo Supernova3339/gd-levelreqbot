@@ -110,6 +110,27 @@ fn emit_impl(ev: &mut EventProxy, event: &str, payload_str: String) {
         error!("event.emit({event}): {e}");
     }
 
+    // 1b. Also fire the generic "module-data-updated" signal useEval listens
+    // for (see hooks/useEval.ts) — without this, a GDUI expression reading
+    // state this event just changed (via `ms.set` alongside the emit, which
+    // is the normal pattern) never re-evaluates on its own; only an
+    // explicit UI-action refresh or a full page remount would ever pick it
+    // up. Every event.emit is, by definition, "something a script wanted
+    // observers to know just changed," so this is the correct place to
+    // trigger it for ALL modules at once rather than each one having to
+    // remember to also fire this itself.
+    //
+    // Payload carries the emitting module's id so useEval can filter to only
+    // the page(s) that actually care — without this, one module ticking
+    // every few seconds (e.g. a poll's live updates) would debounce-refetch
+    // every OTHER currently-open module's page too, for no reason. A script
+    // with no module_id (a custom command/library script) has nothing to
+    // scope to, so it broadcasts unscoped (null payload = refresh everyone),
+    // same as before.
+    if let Err(e) = ev.app_handle.emit("module-data-updated", &ev.module_id) {
+        error!("event.emit({event}): failed to fire module-data-updated companion signal: {e}");
+    }
+
     // 2. Broadcast to WebSocket clients if the server is running
     if let Some(ws) = ev.app_handle.try_state::<Arc<WsState>>() {
         if ws.client_count() > 0 {

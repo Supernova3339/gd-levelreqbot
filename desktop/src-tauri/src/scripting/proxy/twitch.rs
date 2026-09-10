@@ -76,6 +76,49 @@ pub fn register(engine: &mut Engine) {
         announce_impl(p, msg, Some(color))
     });
 
+    // pin_message(msg) — sends a chat message via Helix and pins it for
+    // Twitch's fixed 20 minutes (moderator:manage:chat_messages). Returns the
+    // sent message's id (save it if you'll want to unpin_message it later),
+    // or () (never errors the script) if the scope/permission isn't there or
+    // Helix isn't available — scripts should fall back to chat.say() rather
+    // than assume this always succeeds. YouTube has no equivalent concept;
+    // this is Twitch-only by nature of the platform, not an omission.
+    engine.register_fn("pin_message", |p: &mut TwitchProxy, msg: &str| -> Dynamic {
+        let Some(bot) = p.bot.clone() else { return Dynamic::UNIT; };
+        let msg = msg.to_string();
+        match block_on(async move { bot.send_pinned_message(&msg).await }) {
+            Ok(id) => Dynamic::from(id),
+            Err(e) => { warn!("twitch.pin_message: {e}"); Dynamic::UNIT }
+        }
+    });
+
+    // unpin_message(message_id) — unpins a message previously pinned via
+    // pin_message. Returns false (never errors the script) if it's already
+    // unpinned/expired or Helix isn't available — treat as best-effort.
+    engine.register_fn("unpin_message", |p: &mut TwitchProxy, message_id: &str| -> bool {
+        let Some(bot) = p.bot.clone() else { return false; };
+        let message_id = message_id.to_string();
+        match block_on(async move { bot.unpin_message(&message_id).await }) {
+            Ok(()) => true,
+            Err(e) => { warn!("twitch.unpin_message: {e}"); false }
+        }
+    });
+
+    // end_poll(poll_id) — ends a native Twitch poll early. Same name as the
+    // internal create_poll/get_poll/end_poll trio on TwitchBot — "native" is
+    // implicit here the same way it is for those, not worth saying twice.
+    // Requires channel:manage:polls AND that the connected account IS the
+    // broadcaster (same restriction as create_poll) — returns false rather
+    // than erroring if either isn't true, or Helix isn't available.
+    engine.register_fn("end_poll", |p: &mut TwitchProxy, poll_id: &str| -> bool {
+        let Some(bot) = p.bot.clone() else { return false; };
+        let poll_id = poll_id.to_string();
+        match block_on(async move { bot.end_poll(&poll_id).await }) {
+            Ok(()) => true,
+            Err(e) => { warn!("twitch.end_poll: {e}"); false }
+        }
+    });
+
     // list_rewards() — this app's manageable channel-point rewards (title, cost, id, ...).
     // Empty array (never errors the script) if Helix isn't available.
     engine.register_fn("list_rewards", |p: &mut TwitchProxy| -> Array {

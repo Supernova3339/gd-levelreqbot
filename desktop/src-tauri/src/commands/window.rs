@@ -1,5 +1,15 @@
 use tauri::{AppHandle, Manager};
 
+/// Opens the app's log directory in the OS file manager — surfaced from the
+/// loading screen when startup is taking unusually long, so "check the log"
+/// is one click instead of the user having to know where AppData even is.
+#[tauri::command]
+pub fn open_log_dir() -> Result<(), String> {
+    let dir = crate::log_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    opener::open(&dir).map_err(|e| e.to_string())
+}
+
 /// Called by level-copy.html when the user clicks the dismiss button.
 #[tauri::command]
 pub async fn dismiss_level_overlay(app: AppHandle) -> Result<(), String> {

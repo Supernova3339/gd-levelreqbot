@@ -4,9 +4,15 @@
 // web.post(url, body)                    → String   — POST plain-text body
 // web.get_json(url)                      → Dynamic  — GET + parse JSON response
 // web.post_json(url, body)               → Dynamic  — POST JSON + parse JSON response
-// web.get_with_headers(url, headers)     → String   — GET with a Rhai map of headers
-// web.post_with_headers(url, b, headers) → String   — POST with headers
+// web.get_with_headers(url, headers)      → String   — GET with a Rhai map of headers
+// web.post_with_headers(url, b, headers)  → String   — POST with headers
+// web.get_json_with_headers(url, headers) → Dynamic  — GET + headers + parse JSON response
+// web.post_json_with_headers(url, b, h)   → Dynamic  — POST JSON body + headers + parse JSON response
+//   (for APIs that need both an Authorization/API-key header and a JSON body —
+//   e.g. web.post_json_with_headers(url, io.encode_json(#{...}), #{"X-API-Key": key}))
 // web.get_status(url)                    → i64      — HTTP status code (0 on failure)
+// web.delete_with_headers(url, headers)  → bool     — DELETE with headers, true on 2xx
+// web.put_json_with_headers(url, b, h)   → Dynamic  — PUT JSON body + headers + parse JSON response
 //
 // All requests time out after 10 seconds.
 // Network errors return () (Rhai unit) or 0 rather than crashing the script.
@@ -98,6 +104,13 @@ fn apply_headers(req: RequestBuilder, headers: &Map) -> RequestBuilder {
     })
 }
 
+/// SSRF-guarded GET, shared with `cache.rs` — the only other proxy that
+/// needs raw outbound HTTP, so it reuses this instead of duplicating the
+/// blocked-URL check and connection-pooled client.
+pub(super) async fn fetch_text(url: &str) -> Option<String> {
+    do_get(url, None).await
+}
+
 async fn do_get(url: &str, headers: Option<&Map>) -> Option<String> {
     if is_blocked_url(url).await {
         warn!("web request to {url} blocked (private/reserved address or non-http(s) scheme)");
@@ -116,6 +129,26 @@ async fn do_post(url: &str, body: String, content_type: &'static str, headers: O
     let req = client().post(url).header("Content-Type", content_type).body(body);
     let req = if let Some(h) = headers { apply_headers(req, h) } else { req };
     req.send().await.ok()?.text().await.ok()
+}
+
+async fn do_put(url: &str, body: String, content_type: &'static str, headers: Option<&Map>) -> Option<String> {
+    if is_blocked_url(url).await {
+        warn!("web request to {url} blocked (private/reserved address or non-http(s) scheme)");
+        return None;
+    }
+    let req = client().put(url).header("Content-Type", content_type).body(body);
+    let req = if let Some(h) = headers { apply_headers(req, h) } else { req };
+    req.send().await.ok()?.text().await.ok()
+}
+
+async fn do_delete(url: &str, headers: Option<&Map>) -> bool {
+    if is_blocked_url(url).await {
+        warn!("web request to {url} blocked (private/reserved address or non-http(s) scheme)");
+        return false;
+    }
+    let req = client().delete(url);
+    let req = if let Some(h) = headers { apply_headers(req, h) } else { req };
+    matches!(req.send().await, Ok(r) if r.status().is_success())
 }
 
 async fn do_status(url: &str) -> u16 {
@@ -184,9 +217,37 @@ pub fn register(engine: &mut Engine) {
         }
     });
 
+    engine.register_fn("get_json_with_headers", |_: &mut WebProxy, url: &str, headers: Map| -> Dynamic {
+        let text = block_on(do_get(url, Some(&headers)));
+        match text.and_then(|t| serde_json::from_str(&t).ok()) {
+            Some(v) => json_to_dynamic(v),
+            None    => { warn!("web.get_json_with_headers({url}) failed"); Dynamic::UNIT }
+        }
+    });
+
+    engine.register_fn("post_json_with_headers", |_: &mut WebProxy, url: &str, body: &str, headers: Map| -> Dynamic {
+        let text = block_on(do_post(url, body.to_string(), "application/json", Some(&headers)));
+        match text.and_then(|t| serde_json::from_str(&t).ok()) {
+            Some(v) => json_to_dynamic(v),
+            None    => { warn!("web.post_json_with_headers({url}) failed"); Dynamic::UNIT }
+        }
+    });
+
     // ── Status code ───────────────────────────────────────────────────────────
 
     engine.register_fn("get_status", |_: &mut WebProxy, url: &str| -> i64 {
         block_on(do_status(url)) as i64
+    });
+
+    engine.register_fn("delete_with_headers", |_: &mut WebProxy, url: &str, headers: Map| -> bool {
+        block_on(do_delete(url, Some(&headers)))
+    });
+
+    engine.register_fn("put_json_with_headers", |_: &mut WebProxy, url: &str, body: &str, headers: Map| -> Dynamic {
+        let text = block_on(do_put(url, body.to_string(), "application/json", Some(&headers)));
+        match text.and_then(|t| serde_json::from_str(&t).ok()) {
+            Some(v) => json_to_dynamic(v),
+            None    => { warn!("web.put_json_with_headers({url}) failed"); Dynamic::UNIT }
+        }
     });
 }

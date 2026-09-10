@@ -21,6 +21,14 @@ pub fn write_install_json(manifest: &Manifest, opts: &InstallOptions) -> Result<
         .as_ref()
         .and_then(|v| v.get("preset_applied").and_then(|b| b.as_bool()))
         .unwrap_or(false);
+    // Preserved the same way: once the app has actually applied the
+    // install-time autostart request, a later update re-running the
+    // installer shouldn't silently re-force it back on over a manual
+    // toggle-off in Settings.
+    let autostart_applied = previous
+        .as_ref()
+        .and_then(|v| v.get("autostart_applied").and_then(|b| b.as_bool()))
+        .unwrap_or(false);
 
     // Developer options carry a machine-bound blessing the app verifies;
     // without it a hand-edited `dev_enabled: true` is ignored.
@@ -37,6 +45,8 @@ pub fn write_install_json(manifest: &Manifest, opts: &InstallOptions) -> Result<
         "cli_installed": opts.install_cli,
         "preset": manifest.preset,
         "preset_applied": preset_applied,
+        "autostart_requested": opts.autostart,
+        "autostart_applied": autostart_applied,
         // Consumed (and cleared) by the app on next launch.
         "pending_modules": opts.selected_offers,
     });

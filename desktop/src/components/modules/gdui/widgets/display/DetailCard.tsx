@@ -45,7 +45,13 @@ export function DetailCard({node}: { node: LayoutNode }) {
         <div style={{padding: 16}}>
             <div style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+                // auto-fit (not auto-fill): auto-fill reserves empty trailing
+                // tracks even when there's no content for them, which is what
+                // left a dead gap to the right of the last row whenever the
+                // field count didn't evenly divide the container width.
+                // auto-fit collapses those empty tracks so the real fields
+                // stretch to actually fill the row.
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
                 gap: 12,
             }}>
                 {fields.map((f: FieldDef) => {

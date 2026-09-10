@@ -10,7 +10,7 @@ import {DevReloadBar} from "./DevReloadBar";
 
 const PageRenderer = lazy(() => import("./modules/PageRenderer").then(m => ({default: m.PageRenderer})));
 
-export type Page = "modules" | "commands" | "integrations" | "libraries" | "console" | "screenshot";
+export type Page = "modules" | "commands" | "libraries" | "console" | "screenshot";
 
 interface ActiveModulePage {
     moduleId: string;
@@ -107,17 +107,6 @@ function ScreenshotIcon({size = 18}: { size?: number }) {
             <circle cx="9" cy="9.5" r="2.5" stroke="currentColor" strokeWidth="1.4"/>
             <path d="M6.5 4l1-2h3l1 2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"
                   strokeLinejoin="round"/>
-        </svg>
-    );
-}
-
-function IntegrationsIcon({size = 18}: { size?: number }) {
-    return (
-        <svg width={size} height={size} viewBox="0 0 18 18" fill="none">
-            <circle cx="4.5" cy="9" r="2.5" stroke="currentColor" strokeWidth="1.6"/>
-            <circle cx="13.5" cy="4.5" r="2.5" stroke="currentColor" strokeWidth="1.6"/>
-            <circle cx="13.5" cy="13.5" r="2.5" stroke="currentColor" strokeWidth="1.6"/>
-            <path d="M6.8 8l4.2-2.5M6.8 10l4.2 2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
         </svg>
     );
 }
@@ -271,9 +260,6 @@ export function Layout({children, onOpenSettings}: LayoutProps) {
                         <NavBtn icon={<CommandsIcon/>} label="Commands"
                                 active={corePage === "commands" && !activeModulePage}
                                 onClick={() => navigateCore("commands")}/>
-                        <NavBtn icon={<IntegrationsIcon/>} label="Integrations"
-                                active={corePage === "integrations" && !activeModulePage}
-                                onClick={() => navigateCore("integrations")}/>
                         <NavBtn icon={<LibrariesIcon/>} label="Libraries"
                                 active={corePage === "libraries" && !activeModulePage}
                                 onClick={() => navigateCore("libraries")}/>

@@ -36,13 +36,32 @@ struct TokenQuery {
     refresh_token: String,
 }
 
+/// Shared shell for every OAuth-callback landing page — same dark theme as
+/// the rest of the app (`#0f0f0f`/`#e0e0e0`) for both the success and error
+/// cases, across Twitch/Twitch-bot/YouTube/license callbacks alike.
+fn auth_page(heading: &str, message: &str, error: bool) -> Html<String> {
+    let title = if error { "Authentication failed" } else { "Authenticated" };
+    let heading_color = if error { "#ef4444" } else { "#f1f1f1" };
+    Html(format!(
+        "<html><head><title>{title}</title>\
+         <style>body{{font-family:sans-serif;background:#0f0f0f;color:#e0e0e0;\
+         display:flex;align-items:center;justify-content:center;height:100vh;margin:0}}\
+         div{{text-align:center}}h2{{color:{heading_color}}}p{{color:#555}}</style></head>\
+         <body><div><h2>{heading}</h2><p>{message}</p></div></body></html>"
+    ))
+}
+
+fn auth_success() -> Html<String> {
+    auth_page("You're all set!", "Authentication complete. You can close this tab and return to the app.", false)
+}
+
 async fn twitch_callback(
     AxumState(state): AxumState<ApiState>,
     Query(q): Query<TokenQuery>,
-) -> Html<&'static str> {
+) -> Html<String> {
     if q.access_token.is_empty() {
         error!("Twitch callback received empty access token");
-        return Html("<h2>Authentication failed — no token received.</h2>");
+        return auth_page("Authentication failed", "No token was received.", true);
     }
 
     let mut cfg = state.config.write().await;
@@ -50,39 +69,33 @@ async fn twitch_callback(
     cfg.auth.twitch_refresh_token = q.refresh_token;
     if let Err(e) = cfg.save_tokens().await {
         error!("Failed to save Twitch token: {e}");
-        return Html("<h2>Authentication failed — could not save token.</h2>");
+        return auth_page("Authentication failed", "Could not save the token.", true);
     }
 
     state.app_handle.emit("twitch-token-saved", ()).ok();
     info!("Twitch access token received and saved");
 
-    Html("<h2 style='font-family:sans-serif;text-align:center;margin-top:80px'>Twitch connected. You can close this tab.</h2>")
+    auth_success()
 }
 
 async fn twitch_bot_callback(
     AxumState(state): AxumState<ApiState>,
     Query(q): Query<TokenQuery>,
-) -> Html<&'static str> {
+) -> Html<String> {
     if q.access_token.is_empty() {
         error!("Twitch bot callback received empty access token");
-        return Html("<h2>Authentication failed — no token received.</h2>");
+        return auth_page("Authentication failed", "No token was received.", true);
     }
     let mut cfg = state.config.write().await;
     cfg.auth.bot_access_token  = q.access_token;
     cfg.auth.bot_refresh_token = q.refresh_token;
     if let Err(e) = cfg.save_tokens().await {
         error!("Failed to save Twitch bot token: {e}");
-        return Html("<h2>Authentication failed — could not save token.</h2>");
+        return auth_page("Authentication failed", "Could not save the token.", true);
     }
     state.app_handle.emit("twitch-bot-token-saved", ()).ok();
     info!("Twitch bot access token received and saved");
-    Html("<html><head><title>Authenticated</title>\
-                   <style>body{font-family:sans-serif;background:#0f0f0f;color:#e0e0e0;\
-                   display:flex;align-items:center;justify-content:center;height:100vh;margin:0}\
-                   div{text-align:center}h2{color:#f1f1f1}p{color:#555}</style></head>\
-                   <body><div><h2>You're all set!</h2>\
-                   <p>Authentication complete. You can close this tab and return to the app.</p>\
-                   </div></body></html>")
+    auth_success()
 }
 
 /// GET /license/callback?token=...&state=...
@@ -94,7 +107,7 @@ async fn license_callback(
     Query(q):         Query<LicenseCallbackQuery>,
 ) -> Html<String> {
     if q.token.is_empty() {
-        return Html("<h2 style='font-family:sans-serif;text-align:center;margin-top:80px;color:#ef4444'>Authentication failed — no token received.</h2>".to_string());
+        return auth_page("Authentication failed", "No token was received.", true);
     }
 
     // Forward token to the frontend; the state string is passed through for CSRF validation
@@ -103,15 +116,7 @@ async fn license_callback(
         "state": q.state,
     })).ok();
 
-    Html(
-        "<html><head><title>Authenticated</title>\
-         <style>body{font-family:sans-serif;background:#0f0f0f;color:#e0e0e0;\
-         display:flex;align-items:center;justify-content:center;height:100vh;margin:0}\
-         div{text-align:center}h2{color:#f1f1f1}p{color:#555}</style></head>\
-         <body><div><h2>You're all set!</h2>\
-         <p>Authentication complete. You can close this tab and return to the app.</p>\
-         </div></body></html>".to_string(),
-    )
+    auth_success()
 }
 
 #[derive(Deserialize)]
@@ -125,10 +130,10 @@ struct LicenseCallbackQuery {
 async fn youtube_callback(
     AxumState(state): AxumState<ApiState>,
     Query(q): Query<TokenQuery>,
-) -> Html<&'static str> {
+) -> Html<String> {
     if q.access_token.is_empty() {
         error!("YouTube callback received empty access token");
-        return Html("<h2>Authentication failed — no token received.</h2>");
+        return auth_page("Authentication failed", "No token was received.", true);
     }
 
     let mut cfg = state.config.write().await;
@@ -136,19 +141,13 @@ async fn youtube_callback(
     cfg.auth.youtube_refresh_token = q.refresh_token;
     if let Err(e) = cfg.save_tokens().await {
         error!("Failed to save YouTube token: {e}");
-        return Html("<h2>Authentication failed — could not save token.</h2>");
+        return auth_page("Authentication failed", "Could not save the token.", true);
     }
 
     state.app_handle.emit("youtube-token-saved", ()).ok();
     info!("YouTube access token received and saved");
 
-    Html("<html><head><title>Authenticated</title>\
-                  <style>body{font-family:sans-serif;background:#0f0f0f;color:#e0e0e0;\
-                  display:flex;align-items:center;justify-content:center;height:100vh;margin:0}\
-                  div{text-align:center}h2{color:#f1f1f1}p{color:#555}</style></head>\
-                  <body><div><h2>You're all set!</h2>\
-                  <p>Authentication complete. You can close this tab and return to the app.</p>\
-                  </div></body></html>")
+    auth_success()
 }
 
 // ── Console event buffer ───────���──────────────────────────────────────────────
@@ -263,12 +262,21 @@ pub async fn start(
         .route("/api/dev/marketplace",        get(dev_marketplace))
         .route("/api/dev/modules",            get(dev_modules))
         .route("/api/dev/commands",           get(dev_commands))
-        .route("/api/dev/preflight/{id}",     get(dev_preflight))
+        // NOTE: this axum/matchit version pair does NOT support the `{name}`
+        // curly-brace path-param syntax — matchit 0.7.3 only recognizes the
+        // bare `:name`/`*name` form, and axum passes the path straight
+        // through untranslated. `{id}` below was silently matching only the
+        // literal text "{id}" (never a real id) until this fix; `{*rest}`
+        // crashed outright since it contains a real `*` matchit's own parser
+        // does understand, just not preceded by the `/` it requires.
+        .route("/api/dev/preflight/:id",      get(dev_preflight))
         .route("/api/dev/watch",              post(dev_watch_start))
-        .route("/api/dev/watch/{id}",         axum::routing::delete(dev_watch_stop))
+        .route("/api/dev/watch/:id",          axum::routing::delete(dev_watch_stop))
         .route("/api/dev/install",            post(dev_install))
         .route("/api/dev/eval",               post(dev_eval))
-        .route("/api/dev/console/events",     get(dev_console_events));
+        .route("/api/dev/console/events",     get(dev_console_events))
+        // Module-published web content (overlays today) — see marketplace_asset's docs.
+        .route("/marketplace/*rest", get(marketplace_asset));
 
     let app = Router::new()
         .merge(preview_routes)
@@ -409,13 +417,111 @@ async fn dev_commands(
     Json(serde_json::json!(rows))
 }
 
+/// GET /marketplace/{*rest} — serves module-published web content, where
+/// `rest` is `<author-slug>.<module_id>/<kind>/<path>`. The namespaced id
+/// matches the exact convention `event.emit`'s module-namespacing already
+/// uses (`slugify(author).module_id`) — one identity scheme for a module's
+/// published surface, not a second one invented just for this. `<kind>` is
+/// `overlays` today (a static file server over a module's own `overlay/`
+/// folder — browser-source pages for OBS etc.); the segment exists so a
+/// future `api` kind has somewhere to live without a URL-scheme change.
+/// A single catch-all rather than `{ns}/{kind}/{*path}` — this axum/matchit
+/// version rejects a named segment followed by a catch-all in the same
+/// route, so the split happens here instead of in the router (see the
+/// git history on this file for the exact error if that's ever attempted
+/// again). Deliberately just a file server for `overlays`: no Rhai runs per
+/// request, and no route/handler is module-authored — module code today
+/// only ever runs in response to something already-trusted (a chat message,
+/// a UI click), and this doesn't change that. Live data reaches the page
+/// over the existing WS event bus (ws/mod.rs), which the overlay's own JS
+/// connects to like any other client. Same loopback-only bind as the rest
+/// of this server (see `start`).
+async fn marketplace_asset(
+    AxumState(s): AxumState<ApiState>,
+    Path(rest): Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut parts = rest.splitn(3, '/');
+    let (Some(namespaced), Some(kind), Some(rel_path)) = (parts.next(), parts.next(), parts.next()) else {
+        return (StatusCode::NOT_FOUND, "Not found").into_response();
+    };
+    // "overlays" = browser-source pages (see ModuleManifest::overlays);
+    // "resources" = any other bundled static file a module wants a stable
+    // URL for (e.g. a logo/icon an <Image srcExpr="ms.resource_url(...)"/>
+    // points at) — both just serve straight from the module's own package,
+    // no manifest declaration needed for "resources" since it's not a
+    // user-facing feature list the way overlays are.
+    if kind != "overlays" && kind != "resources" {
+        return (StatusCode::NOT_FOUND, "Unknown resource kind").into_response();
+    }
+    // Same traversal check as read_module_page (commands/modules.rs) — reused
+    // here rather than shared because Tauri commands and Axum handlers take
+    // different parameter/return shapes, not because the rule differs.
+    if rel_path.contains("..") || rel_path.starts_with('/') || rel_path.starts_with('\\') {
+        return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
+    }
+    let mods = modules(&s.app_handle);
+    let Some(module_id) = resolve_namespaced_module(&mods, namespaced).await else {
+        return (StatusCode::NOT_FOUND, "Not found").into_response();
+    };
+    let file_path = mods.module_dir(&module_id).await.join(kind).join(rel_path);
+    match tokio::fs::read(&file_path).await {
+        Ok(bytes) => {
+            let mime = overlay_mime(&file_path);
+            ([(axum::http::header::CONTENT_TYPE, mime)], bytes).into_response()
+        }
+        Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
+    }
+}
+
+/// `<author-slug>.<module_id>` -> bare module_id. Modules only store bare
+/// `id`/`author` separately (id is the real primary key — already unique
+/// within one installation), so this is a small reverse lookup rather than
+/// a stored column, matching the same `slugify(author).id` computation
+/// `event.emit`'s module-namespacing already does.
+async fn resolve_namespaced_module(mods: &Arc<ModuleState>, namespaced: &str) -> Option<String> {
+    let pool = mods.db.read().await;
+    // `modules.author` is install-mechanism bookkeeping (literally "local"
+    // for a dev-watched/local install) — the real author is always
+    // manifest.json's own "author" field. See overlay_url_for's identical
+    // comment (scripting/proxy/module_store.rs) for why.
+    let rows: Vec<(String, String)> = sqlx::query_as("SELECT id, manifest FROM modules")
+        .fetch_all(&*pool).await.ok()?;
+    rows.into_iter().find_map(|(id, manifest_json)| {
+        let manifest: serde_json::Value = serde_json::from_str(&manifest_json).ok()?;
+        let author = manifest["author"].as_str()?;
+        (format!("{}.{}", crate::modules::slugify(author), id) == namespaced).then_some(id)
+    })
+}
+
+fn overlay_mime(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "css"  => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "json" => "application/json",
+        "svg"  => "image/svg+xml",
+        "png"  => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif"  => "image/gif",
+        "webp" => "image/webp",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
+}
+
 async fn dev_preflight(
     AxumState(s): AxumState<ApiState>,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let mods = modules(&s.app_handle);
     if mods.get_module(&id).await.is_none() {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("Module '{}' not found", id)})));
+        // Not a module — check whether it's an installed library-bundle
+        // package instead (e.g. "stdlib"); see preflight_module's doc
+        // comment in commands/modules.rs for why this is a separate path.
+        let pool = mods.db.read().await;
+        let issues = crate::commands::marketplace::preflight_package(&pool, &id).await;
+        return (StatusCode::OK, Json(serde_json::json!(issues)));
     }
     let q = queue(&s.app_handle);
     // Structural checks (file existence, page/library refs, command triggers)…

@@ -480,7 +480,7 @@ function DetailPanel({selection, onClose, onSaved}: DetailPanelProps) {
                     const violations = findLockViolations(moduleDefaultBody, bodyToSave);
                     if (violations.length > 0) {
                         const lines = violations.map(v => v.startLine === v.endLine ? `line ${v.startLine}` : `lines ${v.startLine}-${v.endLine}`).join(", ");
-                        throw new Error(`This module locks part of this script (${lines}) — that part was changed or removed, so the save was blocked. Everything outside a "// @lock … // @unlock" block is still yours to edit.`);
+                        throw new Error(`This module locks part of this script (${lines}) — that part was changed or removed, please remove any changes and try saving again. If you have only made changes here, your changes will not be saved.`);
                     }
                 }
 

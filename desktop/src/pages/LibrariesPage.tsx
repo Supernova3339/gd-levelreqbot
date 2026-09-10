@@ -3,7 +3,14 @@ import {listen} from "@tauri-apps/api/event";
 import {LibrarySidebar} from "./libraries/LibrarySidebar";
 import {LibraryEditor} from "./libraries/LibraryEditor";
 import {type Library, useLibraries} from "./libraries/useLibraries";
-import {fetchMarketplaceAdminList, getLicenseToken, installMarketplaceModule, uninstallPackage} from "../lib/commands";
+import {
+    fetchMarketplaceAdminList,
+    getLicenseToken,
+    hardRefreshModule,
+    installMarketplaceModule,
+    installModuleFromDir,
+    uninstallPackage
+} from "../lib/commands";
 import {usePackageMarketplace} from "./modules/usePackageMarketplace";
 import type {CatalogEntry, MarketplaceSort} from "./modules/useMarketplace";
 import {roleAtLeast, useAccount} from "./modules/useAccount";
@@ -231,6 +238,30 @@ function PackagesTab() {
         }
     }, [selectedEntry, refresh, show]);
 
+    // Same dev-watch refresh/hard-refresh affordances ModulesPage wires up for
+    // modules — without these, the Refresh/Hard Refresh buttons ModuleDetail
+    // already renders for any dev-watched entry (regardless of package_type)
+    // silently no-op for packages since onRefresh/onHardRefresh were never
+    // passed down here.
+    const handleRefresh = useCallback(() => {
+        const w = selectedEntry?.devWatch;
+        if (!w) return;
+        setBusy(true);
+        installModuleFromDir(w.source_dir)
+            .then(() => show({message: "Package refreshed from source.", variant: "success"}))
+            .catch(e => show({message: String(e), variant: "error"}))
+            .finally(() => setBusy(false));
+    }, [selectedEntry, show]);
+    const handleHardRefresh = useCallback(() => {
+        const w = selectedEntry?.devWatch;
+        if (!w) return;
+        setBusy(true);
+        hardRefreshModule(w.source_dir)
+            .then(() => show({message: "Package fully reinstalled from source.", variant: "success"}))
+            .catch(e => show({message: String(e), variant: "error"}))
+            .finally(() => setBusy(false));
+    }, [selectedEntry, show]);
+
     return (
         <div style={{display: "flex", flex: 1, minHeight: 0}}>
             <ModuleCatalogList
@@ -272,6 +303,8 @@ function PackagesTab() {
                         onInstall={handleInstall}
                         onUninstall={handleUninstall}
                         onUpdate={handleInstall}
+                        onRefresh={handleRefresh}
+                        onHardRefresh={handleHardRefresh}
                         onApproved={handleApproved}
                         onDenied={handleDenied}
                         onMetaSaved={handleMetaSaved}

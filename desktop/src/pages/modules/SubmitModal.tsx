@@ -8,7 +8,7 @@ import {
     type SubmitPackageData,
     type Team
 } from "./marketplace-api";
-import {MCategoryField, MField, MModal, type MPackageType, MSep, MTypeToggle} from "./shared";
+import {MCategoryField, MField, MLabel, MModal, type MPackageType, MSep, MTypeToggle} from "./shared";
 import {MIconPicker} from "./MIconPicker";
 import {Turnstile} from "../../components/Turnstile";
 
@@ -30,6 +30,7 @@ export function SubmitModal({username, initialType, onClose, onSuccess}: {
     const [tags, setTags] = useState("");
     const [busy, setBusy] = useState(false);
     const [err, setErr] = useState<string | null>(null);
+    const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
     const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
     // undefined = still loading; null = signed in but no vanity set yet.
@@ -70,25 +71,33 @@ export function SubmitModal({username, initialType, onClose, onSuccess}: {
     const loadingIdentity = vanity === undefined;
     const blocked = !loadingIdentity && submitAs === "self" && !vanity;
 
-    const set = (key: keyof FormData) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+    const set = (key: keyof FormData) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
         setForm(f => ({...f, [key]: e.target.value}));
+        setFieldErrors(errs => errs[key] ? {...errs, [key]: ""} : errs);
+    };
+
+    // All at once, not a sequential if-chain that only ever reveals the next
+    // problem after the previous one is fixed and resubmitted.
+    const validate = (): Record<string, string> => {
+        const errors: Record<string, string> = {};
+        if (!idSuffix.trim()) errors.idSuffix = "Required";
+        if (!form.name.trim()) errors.name = "Required";
+        if (!form.description.trim()) errors.description = "Required";
+        if (!form.version.trim()) errors.version = "Required";
+        if (!form.download_url.trim()) errors.download_url = "Required";
+        return errors;
+    };
 
     const submit = async () => {
         if (blocked || loadingIdentity || !prefix) {
             setErr("A vanity handle is required to submit");
             return;
         }
-        const suffix = idSuffix.trim();
-        if (!suffix) {
-            setErr('"id" is required');
+        const errors = validate();
+        setFieldErrors(errors);
+        if (Object.keys(errors).length > 0) {
+            setErr(null);
             return;
-        }
-        const required: (keyof FormData)[] = ["name", "description", "version", "download_url"];
-        for (const f of required) {
-            if (!form[f]?.toString().trim()) {
-                setErr(`"${f}" is required`);
-                return;
-            }
         }
         if (!captchaToken) {
             setErr("Complete the verification check first");
@@ -104,7 +113,7 @@ export function SubmitModal({username, initialType, onClose, onSuccess}: {
         try {
             await mpSubmitPackage({
                 ...form,
-                id: `${prefix}.${suffix}`,
+                id: `${prefix}.${idSuffix.trim()}`,
                 author: username,
                 tags: tags.split(",").map(t => t.trim()).filter(Boolean),
                 team_id: typeof submitAs === "number" ? submitAs : undefined,
@@ -129,16 +138,7 @@ export function SubmitModal({username, initialType, onClose, onSuccess}: {
 
             {teams.length > 0 && (
                 <div style={{marginBottom: 12}}>
-                    <label style={{
-                        fontSize: 10,
-                        fontWeight: 600,
-                        color: "#555",
-                        letterSpacing: "0.04em",
-                        display: "block",
-                        marginBottom: 4
-                    }}>
-                        Submit as
-                    </label>
+                    <MLabel>Submit as</MLabel>
                     <div style={{display: "flex", flexWrap: "wrap", gap: 6}}>
                         <SubmitAsChip label={username} active={submitAs === "self"}
                                       onClick={() => setSubmitAs("self")}/>
@@ -161,9 +161,14 @@ export function SubmitModal({username, initialType, onClose, onSuccess}: {
             )}
 
             <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px"}}>
-                <PackageIdField prefix={prefix} suffix={idSuffix} onChange={setIdSuffix}
-                                disabled={blocked || loadingIdentity}/>
-                <MField label="Display name" value={form.name} onChange={set("name")} placeholder="My Module"/>
+                <PackageIdField prefix={prefix} suffix={idSuffix}
+                                onChange={v => {
+                                    setIdSuffix(v);
+                                    setFieldErrors(errs => errs.idSuffix ? {...errs, idSuffix: ""} : errs);
+                                }}
+                                disabled={blocked || loadingIdentity} error={fieldErrors.idSuffix}/>
+                <MField label="Display name" value={form.name} onChange={set("name")} placeholder="My Module"
+                        error={fieldErrors.name}/>
             </div>
 
             <fieldset disabled={blocked || loadingIdentity} style={{border: "none", padding: 0, margin: 0}}>
@@ -176,7 +181,7 @@ export function SubmitModal({username, initialType, onClose, onSuccess}: {
 
                 <MSep label="Details"/>
                 <MField label="Description" value={form.description} onChange={set("description")} multi
-                        placeholder="What does this package do?"/>
+                        placeholder="What does this package do?" error={fieldErrors.description}/>
                 <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px"}}>
                     <MField label="Tags" value={tags} onChange={e => setTags(e.target.value)}
                             placeholder="queue, fun, twitch" hint="comma-separated"/>
@@ -185,9 +190,10 @@ export function SubmitModal({username, initialType, onClose, onSuccess}: {
 
                 <MSep label="Release"/>
                 <div style={{display: "grid", gridTemplateColumns: "1fr 2fr", gap: "0 12px"}}>
-                    <MField label="Version" value={form.version} onChange={set("version")} placeholder="1.0.0"/>
+                    <MField label="Version" value={form.version} onChange={set("version")} placeholder="1.0.0"
+                            error={fieldErrors.version}/>
                     <MField label="Download URL" value={form.download_url} onChange={set("download_url")}
-                            placeholder="https://…/package.gdmod"/>
+                            placeholder="https://…/package.gdmod" error={fieldErrors.download_url}/>
                 </div>
                 <MField label="SHA-256 checksum" value={String(form.checksum ?? "")} onChange={set("checksum")}
                         placeholder="optional" hint="optional"/>
@@ -220,24 +226,15 @@ function SubmitAsChip({label, active, onClick}: { label: string; active: boolean
 
 // ── Package ID field — immutable vanity prefix + editable suffix ────────────
 
-function PackageIdField({prefix, suffix, onChange, disabled}: {
-    prefix: string | null; suffix: string; onChange: (v: string) => void; disabled?: boolean;
+function PackageIdField({prefix, suffix, onChange, disabled, error}: {
+    prefix: string | null; suffix: string; onChange: (v: string) => void; disabled?: boolean; error?: string;
 }) {
     return (
         <div style={{marginBottom: 12}}>
-            <label style={{
-                fontSize: 10,
-                fontWeight: 600,
-                color: "#555",
-                letterSpacing: "0.04em",
-                display: "block",
-                marginBottom: 4
-            }}>
-                Package ID
-            </label>
+            <MLabel>Package ID</MLabel>
             <div style={{
                 display: "flex", alignItems: "center",
-                border: "1px solid #242424", borderRadius: 6, overflow: "hidden",
+                border: `1px solid ${error ? "#ef4444" : "#242424"}`, borderRadius: 6, overflow: "hidden",
                 backgroundColor: disabled ? "#0d0d0d" : "#111",
             }}>
                 <span style={{
@@ -258,6 +255,7 @@ function PackageIdField({prefix, suffix, onChange, disabled}: {
                     }}
                 />
             </div>
+            {error && <span style={{fontSize: 10, color: "#ef4444"}}>{error}</span>}
         </div>
     );
 }

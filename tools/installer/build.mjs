@@ -428,6 +428,23 @@ if (platform === 'darwin') {
 }
 ok(`Staged app (${exeName})`);
 
+// Watchdog launch-wrapper (built by beforeBuildCommand: cargo build -p
+// gdlqb-watchdog), staged alongside the app exe — not macOS, where
+// launch_app() opens the .app bundle directly via `open` and shortcuts are
+// handled by the OS's own bundle conventions rather than our platform.rs.
+const watchdogName = platform === 'win32' ? 'gdlqb-watchdog.exe' : 'gdlqb-watchdog';
+let watchdogStaged = false;
+if (platform !== 'darwin') {
+    const watchdogExe = join(release, watchdogName);
+    if (existsSync(watchdogExe)) {
+        copyFileSync(watchdogExe, join(stage, 'app', watchdogName));
+        watchdogStaged = true;
+        ok(`Staged watchdog (${watchdogName})`);
+    } else {
+        warn(`Missing ${watchdogExe} — shortcuts will launch the app directly, without crash capture`);
+    }
+}
+
 // CLI sidecar (built by beforeBuildCommand: cargo build -p gdlqbot-cli)
 const cliName = platform === 'win32' ? 'gdlqbcli.exe' : 'gdlqbcli';
 let cliStaged = false;
@@ -480,6 +497,7 @@ const manifest = {
     homepage: instConf.homepage ?? '',
     exe_name: exeName,
     cli_name: cliStaged ? cliName : null,
+    watchdog_name: watchdogStaged ? watchdogName : null,
     license: readFileSync(resolve(__dirname, instConf.licenseFile), 'utf8'),
     file_associations: fileAssociations,
     defaults: instConf.defaults ?? {},

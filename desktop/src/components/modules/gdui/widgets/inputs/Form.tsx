@@ -1,6 +1,15 @@
-import {type ChangeEvent, type CSSProperties, type FocusEvent, useCallback, useEffect, useRef, useState} from "react";
+import {
+    type ChangeEvent,
+    type CSSProperties,
+    type FocusEvent,
+    type ReactNode,
+    useCallback,
+    useEffect,
+    useRef,
+    useState
+} from "react";
 import type {FormFieldDef, LayoutNode} from "../../../../../lib/types";
-import {evalModulePanelData} from "../../../../../lib/commands";
+import {evalModulePanelDataStrict} from "../../../../../lib/commands";
 import {useModulePageContext} from "../../context";
 import {useAction} from "../../hooks/useAction";
 
@@ -47,7 +56,7 @@ function TextField({field, value, onChange}: {
     }
     return (
         <input
-            type={field.type === "number" ? "number" : "text"}
+            type={field.type === "number" ? "number" : field.type === "password" ? "password" : "text"}
             value={String(value ?? "")}
             placeholder={field.placeholder}
             min={field.min}
@@ -134,21 +143,103 @@ function ChipToggle({label, active, onClick}: { label: string; active: boolean; 
     );
 }
 
+// Custom dropdown rather than a bare <select> — a bare <select> with a
+// `value` that matches none of its <option>s (true whenever the real saved
+// value hasn't loaded yet, or loading failed — see loadDefaults' retry
+// comment) silently renders the FIRST option as if it were selected, which
+// looks exactly like "your saved choice got reset" even though the
+// underlying state is still just unresolved. This version only ever shows
+// text for a value that's actually present, and says so plainly otherwise.
 function SelectField({field, value, onChange}: {
     field: FormFieldDef;
     value: unknown;
     onChange: (v: string) => void;
 }) {
+    const [open, setOpen] = useState(false);
+    const ref = useRef<HTMLDivElement>(null);
+    const options = field.options ?? [];
+    const current = options.find(o => o.value === value);
+
+    useEffect(() => {
+        if (!open) return;
+        const h = (e: MouseEvent) => {
+            if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+        };
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") setOpen(false);
+        };
+        document.addEventListener("mousedown", h);
+        document.addEventListener("keydown", onKey);
+        return () => {
+            document.removeEventListener("mousedown", h);
+            document.removeEventListener("keydown", onKey);
+        };
+    }, [open]);
+
     return (
-        <select
-            value={String(value ?? "")}
-            onChange={e => onChange(e.target.value)}
-            style={{...INPUT_BASE, cursor: "pointer"}}
-        >
-            {(field.options ?? []).map(opt => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-        </select>
+        <div ref={ref} style={{position: "relative"}}>
+            <button
+                type="button"
+                onClick={() => setOpen(o => !o)}
+                style={{
+                    ...INPUT_BASE,
+                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+                    cursor: "pointer", textAlign: "left",
+                    color: current ? "#e0e0e0" : "#666",
+                    borderColor: open ? "var(--color-accent)" : "#222",
+                }}
+            >
+                <span style={{overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>
+                    {current ? current.label : "Loading…"}
+                </span>
+                <svg width="9" height="9" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.6"
+                     strokeLinecap="round" style={{
+                    flexShrink: 0, opacity: 0.5, transition: "transform 0.14s",
+                    transform: open ? "rotate(180deg)" : "none",
+                }}>
+                    <polyline points="1,2.5 4,5.5 7,2.5"/>
+                </svg>
+            </button>
+
+            {open && (
+                <div role="listbox" style={{
+                    position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
+                    backgroundColor: "#0d0d0d", border: "1px solid #1e1e1e", borderRadius: 7,
+                    boxShadow: "0 16px 40px rgba(0,0,0,0.7), 0 2px 8px rgba(0,0,0,0.5)",
+                    zIndex: 1000, padding: 4, maxHeight: 260, overflowY: "auto",
+                }}>
+                    {options.map(opt => {
+                        const selected = opt.value === value;
+                        return (
+                            <div
+                                key={opt.value}
+                                role="option"
+                                aria-selected={selected}
+                                onClick={() => {
+                                    onChange(opt.value);
+                                    setOpen(false);
+                                }}
+                                style={{
+                                    display: "flex", alignItems: "center", gap: 8,
+                                    padding: "7px 9px", borderRadius: 5, fontSize: 12.5,
+                                    color: selected ? "#fff" : "#ccc",
+                                    backgroundColor: selected ? "var(--color-accent)" : "transparent",
+                                    cursor: "pointer",
+                                }}
+                                onMouseEnter={e => {
+                                    if (!selected) e.currentTarget.style.backgroundColor = "#1a1a1a";
+                                }}
+                                onMouseLeave={e => {
+                                    if (!selected) e.currentTarget.style.backgroundColor = "transparent";
+                                }}
+                            >
+                                {opt.label}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
     );
 }
 
@@ -162,6 +253,16 @@ function SelectField({field, value, onChange}: {
 interface FieldGroup {
     header?: string;
     fields: FormFieldDef[];
+}
+
+// A group name starting with "_" still clusters its fields together (for
+// spacing — consecutive same-group fields render as one visual block) but
+// never draws a section header above them — for when you want fields kept
+// apart from unrelated ones without labeling the split, e.g. two duration
+// fields that read fine on their own but shouldn't visually run together
+// with a totally unrelated toggle group right after them.
+function groupHeaderText(header: string | undefined): string | undefined {
+    return header && !header.startsWith("_") ? header : undefined;
 }
 
 function groupFields(fields: FormFieldDef[]): FieldGroup[] {
@@ -240,9 +341,9 @@ function ToggleGroupBlock({group, values, onChange, first}: {
 
     return (
         <div style={{marginBottom: useChips ? 4 : 0}}>
-            {group.header && (
+            {groupHeaderText(group.header) && (
                 <GroupHeader
-                    label={group.header} first={first}
+                    label={groupHeaderText(group.header)!} first={first}
                     onAll={useChips ? () => group.fields.forEach(f => onChange(f.key, true)) : undefined}
                     onNone={useChips ? () => group.fields.forEach(f => onChange(f.key, false)) : undefined}
                 />
@@ -271,10 +372,58 @@ function ToggleGroupBlock({group, values, onChange, first}: {
 
 // ── FormField wrapper ─────────────────────────────────────────────────────────
 
-function FormField({field, value, onChange}: {
+// A compact pill-row alternative to SelectField's full dropdown — for a
+// handful of short options riding along another field's label (see
+// FormFieldDef.attach_to/compact) where a whole dropdown would be visually
+// heavier than the field it's attached to.
+function SegmentedToggle({field, value, onChange}: {
+    field: FormFieldDef;
+    value: unknown;
+    onChange: (v: string) => void;
+}) {
+    const options = field.options ?? [];
+    return (
+        <div style={{
+            display: "flex", padding: 2, gap: 2,
+            backgroundColor: "#0c0c0c", border: "1px solid #1c1c1c", borderRadius: 5,
+            flexShrink: 0,
+        }}>
+            {options.map(opt => {
+                const active = opt.value === value;
+                return (
+                    <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => onChange(opt.value)}
+                        style={{
+                            appearance: "none", border: "none",
+                            backgroundColor: active ? "color-mix(in srgb, var(--color-accent) 26%, transparent)" : "transparent",
+                            color: active ? "var(--color-accent)" : "#666",
+                            fontSize: 10.5, fontWeight: 600, letterSpacing: "0.02em",
+                            padding: "3px 8px", borderRadius: 3, cursor: "pointer",
+                            transition: "background-color 0.12s, color 0.12s",
+                        }}
+                        onMouseEnter={e => {
+                            if (!active) e.currentTarget.style.color = "#999";
+                        }}
+                        onMouseLeave={e => {
+                            if (!active) e.currentTarget.style.color = "#666";
+                        }}
+                    >
+                        {opt.label}
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
+function FormField({field, value, onChange, accessory}: {
     field: FormFieldDef;
     value: unknown;
     onChange: (v: unknown) => void;
+    /** A field attached to this one via attach_to — rendered on the label row. */
+    accessory?: ReactNode;
 }) {
     if (field.type === "toggle") {
         return (
@@ -286,13 +435,19 @@ function FormField({field, value, onChange}: {
 
     return (
         <div style={{marginBottom: 14}}>
-            <label style={{
-                display: "block", fontSize: 11, color: "#555",
-                fontWeight: 600, textTransform: "uppercase",
-                letterSpacing: "0.06em", marginBottom: 5,
+            <div style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                marginBottom: 5,
             }}>
-                {field.label}
-            </label>
+                <label style={{
+                    fontSize: 11, color: "#555",
+                    fontWeight: 600, textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                }}>
+                    {field.label}
+                </label>
+                {accessory}
+            </div>
             {field.type === "select"
                 ? <SelectField field={field} value={value} onChange={onChange}/>
                 : <TextField field={field} value={value} onChange={onChange}/>
@@ -320,7 +475,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 // still settling right after the app or module page finishes mounting), so a
 // few retries beat permanently showing hardcoded fallbacks instead of the
 // user's actual saved settings until they happen to revisit the page.
-const RETRY_DELAYS_MS = [150, 400, 900];
+const RETRY_DELAYS_MS = [150, 400, 900, 1800];
 
 /**
  * All fields' defaultExpr are evaluated in ONE Rhai call (a map literal), not
@@ -343,7 +498,7 @@ async function loadDefaults(moduleId: string, fields: FormFieldDef[]): Promise<{
 
     for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
         try {
-            const result = await evalModulePanelData(moduleId, mapExpr);
+            const result = await evalModulePanelDataStrict(moduleId, mapExpr);
             if (result && typeof result === "object") {
                 Object.assign(defaults, result as Record<string, unknown>);
                 return {values: defaults, failed: false};
@@ -353,8 +508,30 @@ async function loadDefaults(moduleId: string, fields: FormFieldDef[]): Promise<{
         }
         if (attempt < RETRY_DELAYS_MS.length) await sleep(RETRY_DELAYS_MS[attempt]);
     }
-    console.error(`Form defaults never loaded for ${moduleId} after ${RETRY_DELAYS_MS.length + 1} attempts — showing fallback values, not saved settings.`);
-    return {values: defaults, failed: true};
+
+    // The batched eval never succeeded — eval_module_panel_data collapses ANY
+    // error in the map literal (even from one unrelated field) down to a bare
+    // "null", so one flaky/slow expression takes every sibling field down
+    // with it. Fall back to evaluating each field's own defaultExpr
+    // separately (slower, one round trip per field, but isolated) so at
+    // least the fields that DO work show the user's real saved values
+    // instead of every field in the form reverting to hardcoded fallbacks.
+    console.error(`Form defaults never loaded as a batch for ${moduleId} after ${RETRY_DELAYS_MS.length + 1} attempts — retrying fields individually.`);
+    let anyStillFailed = false;
+    await Promise.all(withExpr.map(async f => {
+        try {
+            const result = await evalModulePanelDataStrict(moduleId, `#{ v: (${f.default_expr}) }`);
+            if (result && typeof result === "object" && "v" in (result as object)) {
+                defaults[f.key] = (result as Record<string, unknown>).v;
+                return;
+            }
+            console.error(`Form field '${f.key}' (${moduleId}) still failed to load individually — showing fallback.`);
+        } catch (e) {
+            console.error(`Form field '${f.key}' (${moduleId}) eval threw`, e);
+        }
+        anyStillFailed = true;
+    }));
+    return {values: defaults, failed: anyStillFailed};
 }
 
 // ── Form ──────────────────────────────────────────────────────────────────────
@@ -441,8 +618,17 @@ export function Form({node}: { node: LayoutNode }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [values, autosave, loaded]);
 
-    const textFields = fields.filter(f => f.type !== "toggle");
-    const toggleFields = fields.filter(f => f.type === "toggle");
+    // Fields with attach_to render on their target's label row instead of
+    // getting their own — pull them out of the normal layout pass and index
+    // by target key so FormField can pick up its accessory, if any.
+    const attachedByTarget: Record<string, FormFieldDef> = {};
+    for (const f of fields) {
+        if (f.attach_to) attachedByTarget[f.attach_to] = f;
+    }
+    const ownFields = fields.filter(f => !f.attach_to);
+
+    const textFields = ownFields.filter(f => f.type !== "toggle");
+    const toggleFields = ownFields.filter(f => f.type === "toggle");
 
     return (
         <div style={{display: "flex", flexDirection: "column", flex: 1, minHeight: 0}}>
@@ -465,15 +651,26 @@ export function Form({node}: { node: LayoutNode }) {
 
                 {groupFields(textFields).map((group, gi) => (
                     <div key={gi}>
-                        {group.header && <GroupHeader label={group.header} first={gi === 0}/>}
-                        {group.fields.map(field => (
-                            <FormField
-                                key={field.key}
-                                field={field}
-                                value={values[field.key] ?? ""}
-                                onChange={v => handleChange(field.key, v)}
-                            />
-                        ))}
+                        {groupHeaderText(group.header) &&
+                            <GroupHeader label={groupHeaderText(group.header)!} first={gi === 0}/>}
+                        {group.fields.map(field => {
+                            const attached = attachedByTarget[field.key];
+                            return (
+                                <FormField
+                                    key={field.key}
+                                    field={field}
+                                    value={values[field.key] ?? ""}
+                                    onChange={v => handleChange(field.key, v)}
+                                    accessory={attached && (
+                                        <SegmentedToggle
+                                            field={attached}
+                                            value={values[attached.key]}
+                                            onChange={v => handleChange(attached.key, v)}
+                                        />
+                                    )}
+                                />
+                            );
+                        })}
                     </div>
                 ))}
 

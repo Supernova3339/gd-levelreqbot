@@ -1,7 +1,7 @@
 ﻿use base64::Engine as _;
 use crate::bot::cmd_cache::CommandCache;
 use crate::bot::dev::DevLogger;
-use crate::bot::{handler, redemption_handler, BotState, BotStatus};
+use crate::bot::{handler, redemption_handler, twitch_events_handler, BotState, BotStatus};
 use crate::bot::platform::ChatPlatform;
 use crate::bot::twitch::TwitchBot;
 use crate::bot::twitch_api::CustomReward;
@@ -175,6 +175,7 @@ pub async fn start_bot(
         token,
         channel,
         bot.message_tx.clone(),
+        Arc::clone(&modules),
         Arc::clone(&dev),
         suppress_watermark,
     ));
@@ -243,6 +244,23 @@ pub async fn start_bot(
         redemption_handler::process_redemptions(
             redemption_rx, redemption_queue, redemption_config, redemption_client, redemption_yt,
             redemption_app, redemption_modules, redemption_cache,
+        ).await;
+    });
+
+    // Spawn the generic Twitch EventSub dispatcher — fans out every
+    // subscribed event type to whichever enabled modules declared interest
+    // via `twitch_events` (see bot::eventsub's module doc).
+    let twitch_events_rx      = twitch_bot.subscribe_twitch_events();
+    let twitch_events_queue   = Arc::clone(&queue);
+    let twitch_events_config  = Arc::clone(&config);
+    let twitch_events_client  = Arc::clone(&twitch_bot);
+    let twitch_events_yt      = youtube_bot_arc.clone();
+    let twitch_events_app     = bot.app_handle.clone();
+    let twitch_events_modules = Arc::clone(&modules);
+    tokio::spawn(async move {
+        twitch_events_handler::process_twitch_events(
+            twitch_events_rx, twitch_events_queue, twitch_events_config, twitch_events_client,
+            twitch_events_yt, twitch_events_app, twitch_events_modules,
         ).await;
     });
 

@@ -25,7 +25,6 @@ import "./lib/previewInput";
 // Each page is only fetched when the user first navigates to it.
 const ModulesPage = React.lazy(() => import("./pages/ModulesPage").then((m) => ({default: m.ModulesPage})));
 const CommandsPage = React.lazy(() => import("./pages/CommandsPage").then((m) => ({default: m.CommandsPage})));
-const IntegrationsPage = React.lazy(() => import("./pages/IntegrationsPage").then((m) => ({default: m.IntegrationsPage})));
 const LibrariesPage = React.lazy(() => import("./pages/LibrariesPage").then((m) => ({default: m.LibrariesPage})));
 const ConsolePage = React.lazy(() => import("./pages/ConsolePage").then((m) => ({default: m.ConsolePage})));
 const ScreenshotTool = React.lazy(() => import("./components/dev/ScreenshotTool").then((m) => ({default: m.ScreenshotTool})));
@@ -40,8 +39,14 @@ function PageFallback() {
 
 type AppState = "loading" | "setup" | "main" | "demo";
 
+// How long to wait before treating "loading" as stuck rather than just slow.
+// Generous — a cold start (first launch, marketplace stdlib fetch, etc.) can
+// legitimately take a few seconds; this is only meant to catch a genuine hang.
+const LOADING_STUCK_AFTER_MS = 15000;
+
 function LoadingScreen() {
     const [status, setStatus] = useState("");
+    const [stuck, setStuck] = useState(false);
 
     useEffect(() => {
         const unlisten = import("@tauri-apps/api/event")
@@ -49,6 +54,11 @@ function LoadingScreen() {
         return () => {
             unlisten.then((f) => f());
         };
+    }, []);
+
+    useEffect(() => {
+        const t = setTimeout(() => setStuck(true), LOADING_STUCK_AFTER_MS);
+        return () => clearTimeout(t);
     }, []);
 
     return (
@@ -62,6 +72,25 @@ function LoadingScreen() {
             }}/>
             {status && (
                 <p style={{fontSize: 11, color: "#333", letterSpacing: "0.04em"}}>{status}</p>
+            )}
+            {stuck && (
+                <div className="flex flex-col items-center gap-2" style={{maxWidth: 280, textAlign: "center"}}>
+                    <p style={{fontSize: 11, color: "#a05a2c", lineHeight: 1.6}}>
+                        {status
+                            ? <>This is taking longer than expected — still stuck on "{status}".</>
+                            : <>This is taking longer than expected, and no startup progress has been
+                                reported at all — the app may have failed to start its background
+                                initialization.</>}
+                    </p>
+                    <button
+                        onClick={() => invoke("open_log_dir").catch(() => {
+                        })}
+                        className="text-xs font-medium underline"
+                        style={{color: "#c17a3d", background: "none", border: "none", cursor: "pointer"}}
+                    >
+                        Open log folder
+                    </button>
+                </div>
             )}
             <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
         </div>
@@ -82,12 +111,12 @@ async function tryStartBot() {
 export default function App() {
     const [appState, setAppState] = useState<AppState>("loading");
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [demoSettingsNotice, setDemoSettingsNotice] = useState(false);
     const [changelogOpen, setChangelogOpen] = useState(false);
     const [changelogAuto, setChangelogAuto] = useState(false);
     const [appVersion, setAppVersion] = useState("");
     const [perfOn, setPerfOn] = useState(localStorage.getItem(PERF_KEY) === "1");
     const keybinds = useKeybinds();
-
 
     // Block the browser/WebView2 native Ctrl+F find bar globally.
     // The script editor handles Ctrl+F internally — if the editor textarea is focused
@@ -152,6 +181,17 @@ export default function App() {
                             console.error(`[app] offer install failed for ${id}:`, err);
                         }
                     }
+                }).catch(() => { /* non-fatal */
+                });
+                // Honor the installer's "launch at login" checkbox, once
+                // (one-shot; the backend marks it applied). Goes through the
+                // same plugin the Settings toggle uses so there's no separate
+                // autostart-registration path to keep in sync.
+                invoke<boolean>("take_autostart_request").then(async (shouldEnable) => {
+                    if (!shouldEnable) return;
+                    const {enable} = await import("@tauri-apps/plugin-autostart");
+                    await enable().catch(() => {
+                    });
                 }).catch(() => { /* non-fatal */
                 });
                 // Check if this is a new version to show What's New
@@ -250,12 +290,11 @@ export default function App() {
                             </div>
                         )}
                         <div className="flex-1 min-h-0">
-                            <Layout onOpenSettings={() => setSettingsOpen(true)}>
+                            <Layout onOpenSettings={() => isDemo ? setDemoSettingsNotice(true) : setSettingsOpen(true)}>
                                 {(page) => (
                                     <ErrorBoundary label={page}>
                                         <React.Suspense fallback={<PageFallback/>}>
                                             {page === "commands" && <CommandsPage/>}
-                                            {page === "integrations" && <IntegrationsPage/>}
                                             {page === "libraries" && <LibrariesPage/>}
                                             {page === "console" && <ConsolePage/>}
                                             {page === "modules" && <ModulesPage/>}
@@ -267,6 +306,51 @@ export default function App() {
                         </div>
                         <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)}
                                        onShowChangelog={openChangelogFromSettings} keybinds={keybinds}/>
+                        {demoSettingsNotice && (
+                            <div
+                                className="fixed inset-0 flex items-center justify-center"
+                                style={{backgroundColor: "rgba(0,0,0,0.6)", zIndex: 100, backdropFilter: "blur(2px)"}}
+                                onClick={() => setDemoSettingsNotice(false)}
+                            >
+                                <div
+                                    className="flex flex-col gap-4 rounded-xl p-6"
+                                    style={{
+                                        backgroundColor: "#1a1a1a", border: "1px solid #2a2a2a",
+                                        boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
+                                        width: "min(380px, 90vw)",
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    <p className="text-sm font-semibold" style={{color: "#f1f1f1"}}>Demo mode</p>
+                                    <p className="text-sm" style={{color: "#a0a0a0", lineHeight: 1.6}}>
+                                        Settings aren't available in demo mode.
+                                    </p>
+                                    <div className="flex gap-2 justify-end">
+                                        <button
+                                            onClick={() => setDemoSettingsNotice(false)}
+                                            className="px-4 py-1.5 text-xs rounded"
+                                            style={{
+                                                backgroundColor: "#222",
+                                                color: "#888",
+                                                border: "1px solid #2a2a2a"
+                                            }}
+                                        >
+                                            Close
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                setDemoSettingsNotice(false);
+                                                exitDemo();
+                                            }}
+                                            className="px-4 py-1.5 text-xs font-semibold rounded"
+                                            style={{backgroundColor: "var(--color-accent)", color: "#fff"}}
+                                        >
+                                            Set up the bot
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                         <ChangelogModal open={changelogOpen} onClose={closeChangelog}
                                         appVersion={appVersion} autoVersion={changelogAuto}/>
                         <LevelCopiedOverlay/>

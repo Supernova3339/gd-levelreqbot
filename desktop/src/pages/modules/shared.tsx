@@ -2,7 +2,20 @@ import React, {useEffect, useId, useState} from "react";
 import {createPortal} from "react-dom";
 import {MARKETPLACE_CATEGORIES, type MarketplaceCategory, REPORT_REASONS, type ReportReason} from "./marketplace-api";
 import {Select} from "../../components/ui/Select";
+import {Input} from "../../components/ui/Input";
+import {Button} from "../../components/ui/Button";
 import {Turnstile} from "../../components/Turnstile";
+
+/** The repeated 10px/600/uppercase-ish label style every field in these forms
+ *  used to restate inline — one place for it now. */
+export function MLabel({children, hint}: { children: React.ReactNode; hint?: string }) {
+    return (
+        <div style={{display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4}}>
+            <label style={{fontSize: 10, fontWeight: 600, color: "#555", letterSpacing: "0.04em"}}>{children}</label>
+            {hint && <span style={{fontSize: 9, color: "#666"}}>{hint}</span>}
+        </div>
+    );
+}
 
 // ── Category picker ───────────────────────────────────────────────────────────
 
@@ -23,16 +36,7 @@ export function MCategoryField({value, onChange, cols}: {
 }) {
     return (
         <div style={{marginBottom: 12, gridColumn: cols}}>
-            <label style={{
-                fontSize: 10,
-                fontWeight: 600,
-                color: "#555",
-                letterSpacing: "0.04em",
-                display: "block",
-                marginBottom: 4
-            }}>
-                Category
-            </label>
+            <MLabel>Category</MLabel>
             <Select<CategoryOptionValue>
                 value={value ?? NONE_CATEGORY}
                 options={CATEGORY_OPTIONS}
@@ -42,39 +46,21 @@ export function MCategoryField({value, onChange, cols}: {
     );
 }
 
-export const inp: React.CSSProperties = {
-    width: "100%", padding: "6px 10px", fontSize: 12, backgroundColor: "#111", color: "#aaa",
-    border: "1px solid #242424", borderRadius: 6, outline: "none", fontFamily: "inherit",
-    resize: "vertical" as const, boxSizing: "border-box",
-};
-
-export function MField({label, value, onChange, multi, placeholder, hint, cols}: {
+export function MField({label, value, onChange, multi, placeholder, hint, cols, error}: {
     label: string; value: string;
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
-    multi?: boolean; placeholder?: string; hint?: string;
+    multi?: boolean; placeholder?: string; hint?: string; error?: string;
     cols?: React.CSSProperties["gridColumn"];
 }) {
     return (
         <div style={{marginBottom: 12, gridColumn: cols}}>
-            <div style={{display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4}}>
-                <label style={{fontSize: 10, fontWeight: 600, color: "#555", letterSpacing: "0.04em"}}>{label}</label>
-                {hint && <span style={{fontSize: 9, color: "#666"}}>{hint}</span>}
-            </div>
+            <MLabel hint={hint}>{label}</MLabel>
             {multi
-                ? <textarea rows={3} value={value} onChange={onChange} style={inp} placeholder={placeholder}
-                            onFocus={e => {
-                                e.currentTarget.style.borderColor = "var(--color-accent)";
-                            }}
-                            onBlur={e => {
-                                e.currentTarget.style.borderColor = "#242424";
-                            }}/>
-                : <input value={value} onChange={onChange} style={inp} placeholder={placeholder}
-                         onFocus={e => {
-                             e.currentTarget.style.borderColor = "var(--color-accent)";
-                         }}
-                         onBlur={e => {
-                             e.currentTarget.style.borderColor = "#242424";
-                         }}/>
+                ? <Input multiline rows={3} value={value}
+                         onChange={onChange as (e: React.ChangeEvent<HTMLTextAreaElement>) => void}
+                         placeholder={placeholder} error={error}/>
+                : <Input value={value} onChange={onChange as (e: React.ChangeEvent<HTMLInputElement>) => void}
+                         placeholder={placeholder} error={error}/>
             }
         </div>
     );
@@ -94,9 +80,20 @@ export function MSep({label}: { label: string }) {
     );
 }
 
-export function MModal({title, subtitle, onClose, onSubmit, submitLabel, busy, submitDisabled, err, children}: {
+export function MModal({
+                           title,
+                           subtitle,
+                           onClose,
+                           onSubmit,
+                           submitLabel,
+                           cancelLabel,
+                           busy,
+                           submitDisabled,
+                           err,
+                           children
+                       }: {
     title: string; subtitle?: React.ReactNode;
-    onClose: () => void; onSubmit: () => void; submitLabel: string;
+    onClose: () => void; onSubmit: () => void; submitLabel: string; cancelLabel?: string;
     busy: boolean; submitDisabled?: boolean; err: string | null; children: React.ReactNode;
 }) {
     // Escape-to-close — every modal in the app goes through this component,
@@ -171,30 +168,10 @@ export function MModal({title, subtitle, onClose, onSubmit, submitLabel, busy, s
                 }}>
                     {err ? <span style={{fontSize: 11, color: "#ef4444"}}>{err}</span> : <span/>}
                     <div style={{display: "flex", gap: 8}}>
-                        <button onClick={onClose} style={{
-                            padding: "6px 16px", fontSize: 12, background: "transparent", color: "#444",
-                            border: "1px solid #222", borderRadius: 6, cursor: "pointer",
-                        }}
-                                onMouseEnter={e => {
-                                    e.currentTarget.style.color = "#777";
-                                    e.currentTarget.style.borderColor = "#333";
-                                }}
-                                onMouseLeave={e => {
-                                    e.currentTarget.style.color = "#444";
-                                    e.currentTarget.style.borderColor = "#222";
-                                }}
-                        >Cancel
-                        </button>
-                        <button onClick={onSubmit} disabled={busy || submitDisabled} style={{
-                            padding: "6px 20px",
-                            fontSize: 12,
-                            fontWeight: 600,
-                            backgroundColor: (busy || submitDisabled) ? "#1a1a1a" : "var(--color-accent)",
-                            color: (busy || submitDisabled) ? "#444" : "#fff",
-                            border: "none",
-                            borderRadius: 6,
-                            cursor: (busy || submitDisabled) ? "not-allowed" : "pointer",
-                        }}>{busy ? "…" : submitLabel}</button>
+                        <Button variant="outline" onClick={onClose}>{cancelLabel ?? "Cancel"}</Button>
+                        <Button variant="primary" onClick={onSubmit} disabled={submitDisabled} loading={busy}>
+                            {submitLabel}
+                        </Button>
                     </div>
                 </div>
             </div>
@@ -245,16 +222,7 @@ export function ReportModal({title, kind, onSubmit, onClose, busy, err}: {
             err={err}
         >
             <div style={{marginBottom: 12}}>
-                <label style={{
-                    fontSize: 10,
-                    fontWeight: 600,
-                    color: "#555",
-                    letterSpacing: "0.04em",
-                    display: "block",
-                    marginBottom: 4
-                }}>
-                    Reason
-                </label>
+                <MLabel>Reason</MLabel>
                 <Select<ReportReason>
                     value={reason}
                     options={reasons}
@@ -281,14 +249,7 @@ export function MTypeToggle({value, onChange}: { value: MPackageType; onChange: 
     const types: MPackageType[] = ["module", "library", "package"];
     return (
         <div style={{marginBottom: 12}}>
-            <label style={{
-                fontSize: 10,
-                fontWeight: 600,
-                color: "#555",
-                letterSpacing: "0.04em",
-                display: "block",
-                marginBottom: 4
-            }}>Type</label>
+            <MLabel>Type</MLabel>
             <div style={{
                 display: "flex",
                 gap: 0,
